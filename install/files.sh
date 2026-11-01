@@ -38,7 +38,7 @@ case $OS:$IS_WSL in macos:*) plat=macos ;; *:1) plat=wsl ;; *) plat=linux ;; esa
 repofile() { [ -e "$REPO/$1" ] && printf '    %s✔%s %-44s %s\n' "$GREEN" "$R" "$1" "$2"; }
 repofile zsh/zshrc "zsh: history, keys, completion, plugins, tmux autostart (your ~/.zshrc sources it)"
 repofile zsh/aliases.zsh "aliases (loaded by zsh/zshrc)"
-repofile zsh/functions.zsh "functions: update, clean, ports, killport, dps, dsh, fkill, installed-packages, terminal"
+repofile zsh/functions.zsh "functions: update, clean, ports, killport, dps, dsh, fkill, vps, installed-packages, terminal"
 repofile "zsh/platform/$plat.zsh" "what only $plat needs: open, clipboard, ssh-agent…"
 repofile config/starship.toml "the prompt (STARSHIP_CONFIG points here)"
 repofile tmux/tmux.conf "tmux: keys, mouse, bar, menus (your ~/.tmux.conf sources it)"

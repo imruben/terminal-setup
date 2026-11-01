@@ -73,3 +73,31 @@ appendWindowsPath = false
 ```
 
 y en PowerShell `wsl --shutdown` para que se aplique. La configuración ya cuenta con ello: abre el navegador y el Explorador de Windows por su ruta completa (`tmux/system/open.sh`), así que todo sigue funcionando con o sin este cambio.
+
+## 5. Una pestaña que entra en tu VPS
+
+La IP y el usuario **no van en el repo**: van en `~/.ssh/config` de WSL, que solo está en tu PC.
+
+```sshconfig
+Host vps
+  HostName <ip-del-servidor>
+  User <usuario>
+  IdentityFile ~/.ssh/id_ed25519
+  ServerAliveInterval 30
+```
+
+Con eso, `ssh vps` (y `scp archivo vps:`) ya funcionan, y también el comando `vps`: dentro de tmux abre una ventana nueva conectada al servidor. Si tu `Host` se llama distinto, `vps <nombre>` o `export TERMINAL_VPS=<nombre>` en `~/.zshrc`.
+
+Para abrirla desde el menú ▾ de Windows Terminal, añade un perfil en `settings.json` (en `profiles.list`):
+
+```jsonc
+{
+    "name": "VPS",
+    "tabTitle": "VPS",
+    "commandline": "wsl.exe -d Ubuntu-24.04 -- ssh vps",
+    "font": { "face": "JetBrainsMono Nerd Font" },
+    "guid": "{un-guid-nuevo}"
+}
+```
+
+Cambia `Ubuntu-24.04` por tu distro (`wsl -l` en PowerShell). Al salir del servidor (`exit`), la pestaña se cierra.

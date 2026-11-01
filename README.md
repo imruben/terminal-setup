@@ -40,6 +40,7 @@ Funciona en **Ubuntu 26.04**, **Ubuntu 24.04**, **WSL** (Ubuntu dentro de Window
   | `ports` / `killport <puerto>` | qué escucha en cada puerto / liberarlo (pregunta antes) |
   | `dps` / `dsh` | contenedores Docker de un vistazo / entrar en uno |
   | `fkill` | buscar procesos con fzf y pararlos |
+  | `vps [host]` | ssh a tu servidor (en tmux, en su propia ventana). IP y usuario van en tu `~/.ssh/config`, no en el repo: ver [Windows Terminal › VPS](windows/windows-terminal.md#5-una-pestaña-que-entra-en-tu-vps) |
   | `terminal` | gestor de sesiones de tmux (`terminal help`) |
 
 **tmux** (prefijo `Ctrl+a`)
