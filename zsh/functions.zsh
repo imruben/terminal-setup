@@ -486,6 +486,24 @@ _installed-packages() {
 }
 (( $+functions[compdef] )) && compdef _installed-packages installed-packages
 
+# vps [host]: ssh to your server. The address and user are not here: they are a `Host`
+# entry in ~/.ssh/config, on this PC only (default name `vps`, or TERMINAL_VPS in ~/.zshrc).
+# Inside tmux it opens in its own window, named after the host.
+vps() {
+  local host=${1:-${TERMINAL_VPS:-vps}}
+  # not configured: ssh would just use the name itself as the address
+  if [[ $(ssh -G "$host" 2>/dev/null | awk '$1 == "hostname" {print $2}') == $host ]]; then
+    print -u2 "vps: no 'Host $host' in ~/.ssh/config. Add one, e.g.:"
+    print -u2 "  Host $host\n    HostName <ip>\n    User <user>"
+    return 1
+  fi
+  if [[ -n $TMUX ]]; then
+    tmux new-window -n "$host" "ssh $host"
+  else
+    ssh "$host"
+  fi
+}
+
 # tmux session manager (tmux/terminal.zsh) · `terminal help`
 terminal() { $TERMINAL_SETUP/tmux/terminal.zsh "$@" }
 

@@ -40,6 +40,7 @@ Funciona en **Ubuntu 26.04**, **Ubuntu 24.04**, **WSL** (Ubuntu dentro de Window
   | `ports` / `killport <puerto>` | qué escucha en cada puerto / liberarlo (pregunta antes) |
   | `dps` / `dsh` | contenedores Docker de un vistazo / entrar en uno |
   | `fkill` | buscar procesos con fzf y pararlos |
+  | `vps [host]` | ssh a tu servidor (en tmux, en su propia ventana). IP y usuario van en tu `~/.ssh/config`, no en el repo: ver [Windows Terminal › VPS](windows/windows-terminal.md#5-una-pestaña-que-entra-en-tu-vps) |
   | `terminal` | gestor de sesiones de tmux (`terminal help`) |
 
 **tmux** (prefijo `Ctrl+a`)
@@ -209,6 +210,7 @@ Abre una terminal nueva: tmux arranca solo y te lleva al **monitor del sistema**
 | el menú con lo más usado | `Ctrl+a Space` (o **󰍜 menu**, o clic derecho en la barra) |
 | abrir / cambiar de sesión | `Ctrl+a s` · en la terminal: `terminal` |
 | una sesión nueva para un proyecto | `Ctrl+a s`, escribe el nombre, Enter, elige la carpeta |
+| una sesión para trabajar al arrancar | si al abrir la terminal solo está `system`, se crea `dev` (en tu home) al lado: `Ctrl+a s` para ir. Otro nombre: `export TERMINAL_DEFAULT_SESSION=<nombre>` en tu `~/.zshrc`; vacío (`=`) para ninguna |
 | pestaña nueva / dividir | `Ctrl+a c` · `Ctrl+a v` (al lado) · `Ctrl+a -` (debajo) |
 | volver al monitor | `Ctrl+a M` (o clic en CPU / RAM de la barra) |
 | una terminal sin tmux | `Ctrl+a d`: sales de tmux al shell normal y tmux sigue funcionando (vuelves con `terminal`). Para que no arranque nunca: `export TERMINAL_NO_AUTOSTART=1` en tu `~/.zshrc` |
