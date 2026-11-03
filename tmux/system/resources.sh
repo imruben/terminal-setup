@@ -20,7 +20,7 @@ B=$'\e[1m' X=$'\e[0m'
 SPARK=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
 NVSMI=$(command -v nvidia-smi || { [[ -x /usr/lib/wsl/lib/nvidia-smi ]] && echo /usr/lib/wsl/lib/nvidia-smi; })
 LINUX=0; [[ -r /proc/stat ]] && LINUX=1
-IS_WSL=0; [[ -n $WSL_DISTRO_NAME || -e /proc/sys/fs/binfmt_misc/WSLInterop ]] && IS_WSL=1
+IS_WSL=0; [[ -n $WSL_DISTRO_NAME || -e /proc/sys/fs/binfmt_misc/WSLInterop || -e /proc/sys/fs/binfmt_misc/WSLInterop-late ]] && IS_WSL=1
 if (( LINUX )); then CORES=$(nproc); else CORES=$(sysctl -n hw.ncpu); fi
 # the interface that reaches the internet (it changes with Wi-Fi, a VPN…)
 iface() {
@@ -59,7 +59,7 @@ cpu_sample() {
     (( dt > 0 && ${prev_total:-0} > 0 )) && cpu=$(( 100 * (dt - (idle - prev_idle)) / dt ))
     prev_total=$total prev_idle=$idle
   else
-    cpu=$(ps -A -o %cpu= | awk -v n="$CORES" '{ s += $1 } END { c = s / n; if (c > 100) c = 100; printf "%d", c }')
+    cpu=$(LC_ALL=C ps -A -o %cpu= | awk -v n="$CORES" '{ s += $1 } END { c = s / n; if (c > 100) c = 100; printf "%d", c }')
   fi
 }
 # memory and swap in KiB: mt total, ma available, st swap total, sf swap free
@@ -216,7 +216,7 @@ while :; do
   line "CPU" "$cpu" ""
   used_of $(( (mt - ma) * 1024 )) $(( mt * 1024 )); line "RAM" $(( (mt - ma) * 100 / mt )) "$REPLY"
   if (( st > 0 )); then used_of $(( (st - sf) * 1024 )) $(( st * 1024 )); line "Swap" $(( (st - sf) * 100 / st )) "$REPLY"; fi
-  if [[ -n $NVSMI ]] && IFS=', ' read -r gu gm gt gtemp gpow < <("$NVSMI" --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits 2>/dev/null | head -1) && [[ $gu =~ ^[0-9]+$ ]]; then
+  if [[ -n $NVSMI ]] && IFS=', ' read -r gu gm gt gtemp gpow < <("$NVSMI" --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits 2>/dev/null | head -1) && [[ $gu =~ ^[0-9]+$ && $gm =~ ^[0-9]+$ && $gt =~ ^[0-9]+$ ]]; then     # [N/A] (no memory data): no GPU line
     used_of $(( gm * 1048576 )) $(( gt * 1048576 )); gpu_txt=$REPLY
     (( cols >= 50 )) && gpu_txt+=" · ${gtemp%.*}°C"
     (( cols >= 60 )) && gpu_txt+=" · ${gpow%.*}W"

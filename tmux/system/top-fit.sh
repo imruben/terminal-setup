@@ -6,6 +6,8 @@
 # the list with 2 rows in a small terminal.
 # top-fit.sh <top pane> [percent (38)] [min rows (8)]
 top=$1 pct=${2:-38} min=${3:-8}
+# zoomed: resizing a pane would undo the zoom (tmux unzooms on resize-pane): the next resize fits it
+[[ $(tmux display -p -t "$1" '#{window_zoomed_flag}' 2>/dev/null) == 1 ]] && exit 0
 H=$(tmux display -p -t "$top" '#{window_height}' 2>/dev/null) || exit 0
 want=$(( H * pct / 100 ))
 (( want < min )) && want=$min

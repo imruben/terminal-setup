@@ -282,14 +282,17 @@ autostart() {
   print -r -- "${D}Plain shell. Run ${X}${C}terminal${X}${D} any time to open the session picker.${X}"
 }
 
-# Poll until restored sessions stop appearing (max ~8s)
+# Wait until the saved sessions are back: tmux-resurrect says so (@restored, its post-restore
+# hook), else until restored sessions stop appearing · `system` is not counted (it is built at
+# once, before continuum even starts restoring) · at most ~8 s
 wait_for_restore() {
   local i count last=-1 stable=0
   print -n -- "${D}Restoring saved sessions…${X}"
   for i in {1..40}; do
-    count=$(session_names | wc -l | tr -d ' ')
+    [[ $(tmux show -gqv @restored 2>/dev/null) == 1 ]] && break
+    count=$(session_names | grep -cvx system)
     if (( count > 0 && count == last )); then
-      (( ++stable >= 4 )) && break
+      (( ++stable >= 5 )) && break
     else
       stable=0
     fi

@@ -195,7 +195,10 @@ class TableApp:
                 return str(r[key]).lower() == value
             return w in text(r)
         rows = [r for r in self.all if self.keep(r) and all(match(r, w) for w in words)]
-        rows.sort(key=lambda r: (r.get(self.sort_key) is None, r.get(self.sort_key)), reverse=self.sort_desc)
+        # (None last · text and numbers never compared with each other)
+        rows.sort(key=lambda r: (r.get(self.sort_key) is None, isinstance(r.get(self.sort_key), str),
+                                 r.get(self.sort_key) if r.get(self.sort_key) is not None else 0),
+                  reverse=self.sort_desc)
         if self.sort_desc:   # keep empty values last when reversing
             rows.sort(key=lambda r: r.get(self.sort_key) is None)
         self.rows = rows = self.order(rows)
@@ -282,8 +285,12 @@ class TableApp:
         if self.master and self.sel_id is None:
             self.sel_id = self.cur_id
         shown = self.sel_id if self.master else self.cur_id
-        if shown != getattr(self, "_announced", object()):
+        # the panes that follow this one change only when you moved here (or on the first draw):
+        # a reload that drops the row (uninstalled from another pane) does not take them over
+        if shown != getattr(self, "_announced", object()) and (getattr(self, "_moved", True) or shown is not None
+                                                               and getattr(self, "_announced", None) is None):
             self._announced = shown
+            self._moved = False
             self.selected(next((r for r in self.rows if r["id"] == shown), None))
         self.buttons = {}
         w = self.w
@@ -361,7 +368,7 @@ class TableApp:
             yes, no = f"{DANGER_BG}{CRUST}{BOLD} y  yes {RESET}", f"{SURFACE}{TEXT} n  no {RESET}"
             x = vlen(q) + 1
             self.buttons["yes"] = (y, x, x + 7)
-            self.buttons["no"] = (y, x + 10, x + 15)
+            self.buttons["no"] = (y, x + 10, x + 16)
             return q + yes + "  " + no
         if self.msg:
             return " " + self.msg
@@ -394,7 +401,10 @@ class TableApp:
                 ok, out = False, f"{argv[0]}: {'no answer in time' if isinstance(e, subprocess.TimeoutExpired) else e.strerror}"
             finally:
                 self.busy.pop(row["id"], None)
-            done(ok, out)
+            try:
+                done(ok, out)
+            except Exception as e:               # a bug in done() must not print over the screen
+                self.flash(f"{type(e).__name__}: {e}", ok=False)
             self.wake()
         threading.Thread(target=work, daemon=True).start()
 
@@ -424,12 +434,14 @@ class TableApp:
             self.menu = Menu(title, items, x, y, self.h, self.w)
 
     def copy_row(self, text):
-        tmuxlink.copy(text)
-        self.flash("copied the row to the clipboard")
+        if tmuxlink.copy(text):
+            self.flash("copied the row to the clipboard")
+        else:
+            self.flash("could not copy: tmux refused it", ok=False)
 
     def toggle_zoom(self):
         tmuxlink.toggle_zoom()
-        self.zoomed = not getattr(self, "zoomed", False)
+        self.zoomed = tmuxlink.pane_state("")[0]       # what tmux did (a pane alone in its tab cannot zoom)
 
     def menu_title(self, row):
         return str(row["id"])
@@ -453,12 +465,16 @@ class TableApp:
         return None
 
     def busy_changed(self):
-        """True when this 'resize' was only background work asking for a redraw."""
+        """True when this 'resize' was only background work asking for a redraw (with a menu
+        or a question open the rows wait: they are read again once it closes)."""
         size = self.screen.size()
         same = size == getattr(self, "_last_size", None)
         self._last_size = size
-        if same and not self.frozen and self.visible:
-            self.reload()
+        if same and self.visible:
+            if self.frozen:
+                self._dirty = True
+            else:
+                self.reload()
         return same
 
     def dwell(self):
@@ -469,6 +485,7 @@ class TableApp:
             if not tmuxlink.pointer_is_here():           # it left for another pane: keep the selection
                 return False
             self.sel_id = self.cur_id
+            self._moved = True
             return True
         return False
 
@@ -477,9 +494,18 @@ class TableApp:
         self.ask = None
         if yes and action:
             action()
+        self.catch_up()
+
+    def catch_up(self):
+        """Answers that arrived while a menu or question was open: read them now."""
+        if getattr(self, "_dirty", False) and not self.frozen:
+            self._dirty = False
+            self.reload()
 
     def dispatch(self, ev):
         kind = ev[0]
+        if kind in ("mouse", "key", "char"):
+            self._moved = True                       # what happens now is yours
         if kind in ("tick", "wake"):
             self.zoomed, self.visible, self.opts = tmuxlink.pane_view(*self.watch)
             if not self.visible:                         # out of sight: no work at all
@@ -502,6 +528,7 @@ class TableApp:
                 self.menu = None
                 if res[0] == "pick":
                     res[1]()
+                self.catch_up()
             return
         if self.prompt:
             if kind == "char":
@@ -512,10 +539,12 @@ class TableApp:
                 self.prompt[1] = ""
             elif kind == "key" and ev[1] in ("esc", "ctrl-c"):
                 self.prompt = None
+                self.catch_up()
             elif kind == "key" and ev[1] == "enter":
                 _, text, submit = self.prompt
                 self.prompt = None
                 submit(text.strip())
+                self.catch_up()
             elif kind == "mouse" and ev[1] in (0, 2) and not ev[4]:
                 self.prompt = None                  # clicking away cancels
             return
@@ -603,8 +632,7 @@ class TableApp:
             self.top = max(0, min(self.max_top, self.top + (-WHEEL_STEP if b == 64 else WHEEL_STEP)))
             b, released = 35, False
         if b & 32:
-            if self.master:
-                tmuxlink.pointer_here()
+            tmuxlink.pointer_here()                      # every pane: a master's dwell needs to know it left
             self.hover_col = self.col_at(x, y)
             r = self.row_at(y)
             if r is None:
@@ -659,8 +687,8 @@ class TableApp:
 def run(app_class):
     try:
         with Screen() as screen:
+            tmuxlink.note_wake()      # first: a wake sent while the pane starts is not lost
             app = app_class(screen)
-            tmuxlink.note_wake()
             app.draw()
             # master tables tick fast to notice a pointer resting on a row (cheap: no fetch);
             # the real refresh still happens every app.interval seconds
@@ -674,9 +702,9 @@ def run(app_class):
                     if app.dwell():
                         app.draw()
                     continue
-                if kind in ("tick", "wake"):
-                    last = time.monotonic()
                 app.dispatch(ev)
+                if kind in ("tick", "wake"):
+                    last = time.monotonic()          # after the work: a slow fetch is not repeated at once
                 screen.tick = app.tick_every()
                 if app.visible or kind not in ("tick", "wake"):
                     app.draw()

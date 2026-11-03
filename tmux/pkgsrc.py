@@ -27,10 +27,13 @@ import http.client
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
 import sys
+import time
+import threading
 import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))     # also when run as a command
@@ -102,11 +105,12 @@ def read_notes():
 def write_notes(notes):
     """Written to a new file that then takes the old one's place: a crash or a full disk
     halfway through cannot leave ~/.apt-notes.tsv empty."""
-    tmp = f"{NOTES}.tmp{os.getpid()}"
+    target = os.path.realpath(NOTES)          # through a link (dotfiles): its target changes
+    tmp = f"{target}.tmp{os.getpid()}"
     with open(tmp, "w", encoding="utf-8") as f:
         for pkg in sorted(notes):
             f.write(f"{pkg}\t{notes[pkg]}\n")
-    os.replace(tmp, NOTES)
+    os.replace(tmp, target)
 
 
 def split_id(pkg_id):
@@ -127,6 +131,19 @@ class Apt:
     @staticmethod
     def available():
         return shutil.which("apt-get") is not None
+
+    _arch = None
+
+    @classmethod
+    def arch(cls):
+        """This machine's own architecture (amd64…): other ones are shown as name:arch."""
+        if cls._arch is None:
+            cls._arch = run_text("dpkg", "--print-architecture").strip() or "?"
+        return cls._arch
+
+    def held(self):
+        """Packages on hold (apt-mark hold): `apt upgrade` keeps them back."""
+        return set(run_text("apt-mark", "showhold").split())
 
     tried_base = False              # build_base() failed once: not again every reload
 
@@ -184,23 +201,28 @@ class Apt:
         mine = sorted(set(run_text("apt-mark", "showmanual").split()) - base)
         if not mine:
             return []
-        out = run_text("dpkg-query", "-W", "-f", "${Package}\t${Version}\t${Installed-Size}\t${binary:Summary}\n", *mine)
+        out = run_text("dpkg-query", "-W", "-f", "${binary:Package}\t${Version}\t${Installed-Size}\t${binary:Summary}\n",
+                       *mine)
+        native = f":{self.arch()}"
         rows = []
         for line in out.splitlines():
             p = line.split("\t")
             if len(p) >= 4:
-                rows.append({"name": p[0], "version": p[1], "size": int(p[2]) * 1024 if p[2].isdigit() else None,
+                name = p[0][:-len(native)] if p[0].endswith(native) else p[0]      # zlib1g · wine32:i386
+                rows.append({"name": name, "version": p[1], "size": int(p[2]) * 1024 if p[2].isdigit() else None,
                              "desc": p[3]})
         return rows
 
     def updates(self):
-        rows = []
+        rows, held, native = [], self.held(), self.arch()
         for line in run_text("apt", "list", "--upgradable").splitlines():
             m = self.LINE.match(line)
             if m:
-                name, suite, new, _, old = m.groups()
+                name, suite, new, arch, old = m.groups()
+                if arch not in (native, "all"):       # another architecture: its own package
+                    name = f"{name}:{arch}"
                 rows.append({"name": name, "old": old, "new": new, "origin": suite.split(",")[0],
-                             "security": "security" in suite})
+                             "security": "security" in suite, "held": name in held or name.split(":")[0] in held})
         return rows
 
     def checked(self):
@@ -269,7 +291,7 @@ class Apt:
         out = run_text("dpkg", "-L", name)
         if not out.strip() or "is not installed" in out:
             return None
-        return [p for p in out.splitlines() if p and p != "/."]
+        return [p for p in out.splitlines() if p.startswith("/") and p != "/."]     # not "diverted by…" lines
 
     def depends(self, name):
         deps = [l.strip() for l in run_text("apt-cache", "depends", "--important", name).splitlines()[1:] if l.strip()]
@@ -278,13 +300,13 @@ class Apt:
         return deps, rdeps
 
     def install(self, name, row=None):
-        return f"sudo apt install {name}"
+        return f"sudo apt install {shlex.quote(name)}"
 
     def remove(self, name):
-        return f"sudo apt remove {name}"
+        return f"sudo apt remove {shlex.quote(name)}"
 
     def upgrade(self, name):
-        return f"sudo apt install --only-upgrade {name}"
+        return f"sudo apt install --only-upgrade {shlex.quote(name)}"
 
     def upgrade_all(self):
         return "sudo apt upgrade"
@@ -311,33 +333,41 @@ class Snap:
     def available(cls):
         return shutil.which("snap") is not None and os.path.exists(cls.SOCKET)
 
-    def api(self, path, timeout=20):
+    def api(self, path, timeout=20, must=False):
+        """snapd's answer · None when it fails (must=True: raises instead, so a pane keeps
+        what it knew rather than showing nothing: snapd not up yet, no network for the store)."""
         try:
             c = _UnixHTTP("localhost", timeout=timeout)
             c.request("GET", path)
             d = json.loads(c.getresponse().read())
             c.close()
         except (OSError, ValueError, http.client.HTTPException):
+            if must:
+                raise OSError(f"snapd did not answer {path}")
             return None
-        return d.get("result") if d.get("type") == "sync" else None
+        if d.get("type") != "sync":
+            if must and not (d.get("result") or {}).get("kind") == "snap-not-found":
+                raise OSError(f"snapd: {(d.get('result') or {}).get('message', 'error')}")
+            return None
+        return d.get("result")
 
-    def installed(self):
-        return {s["name"]: s for s in (self.api("/v2/snaps") or [])}
+    def installed(self, must=False):
+        return {s["name"]: s for s in (self.api("/v2/snaps", must=must) or [])}
 
     def mine(self):
         """Apps you installed: not the bases, snapd itself, or content snaps (themes,
         runtimes) that come along as dependencies — those have no commands."""
         rows = []
-        for s in self.installed().values():
+        for s in self.installed(must=True).values():
             if s.get("type") == "app" and s.get("apps"):
                 rows.append({"name": s["name"], "version": s.get("version", ""), "size": s.get("installed-size"),
                              "desc": s.get("summary", "")})
         return rows
 
     def updates(self):
-        local = self.installed()
+        local = self.installed(must=True)
         rows = []
-        for s in self.api("/v2/find?select=refresh") or []:
+        for s in self.api("/v2/find?select=refresh", must=True) or []:
             old = local.get(s["name"], {}).get("version", "")
             rows.append({"name": s["name"], "old": old, "new": s.get("version", ""),
                          "origin": s.get("channel", "") or "stable", "security": False})
@@ -361,8 +391,11 @@ class Snap:
         lines = [k("Package") + f"{BOLD}{TEXT}{name}{RESET}  {DIM}snap"]
         lines.append(k("Installed") + (f"{GREEN}{local.get('version')}{DIM}  rev {local.get('revision')}"
                                         if local else f"{DIM}no"))
-        if store and local and store.get("version") != local.get("version"):
-            lines.append(k("Available") + f"{YELLOW}{store.get('version')}{DIM}  (update pending)")
+        # what the channel you follow has (latest/edge, 6.x/stable…), not the store's default one
+        tracked = ((store or {}).get("channels") or {}).get((local or {}).get("tracking-channel") or "", {})
+        newest = tracked.get("version") or (store or {}).get("version")
+        if store and local and newest and newest != local.get("version"):
+            lines.append(k("Available") + f"{YELLOW}{newest}{DIM}  (update pending)")
         elif store and not local:
             lines.append(k("Available") + f"{TEXT}{store.get('version')}")
         if note:
@@ -397,8 +430,7 @@ class Snap:
             dirs.sort()
             paths.append(dirpath)
             paths += [os.path.join(dirpath, f) for f in sorted(files)]
-            if len(paths) > 3000:
-                paths.append("… (more)")
+            if len(paths) > 3000:                 # enough to see what it is
                 break
         return paths
 
@@ -416,13 +448,13 @@ class Snap:
         return deps, rdeps
 
     def install(self, name, row=None):
-        return f"sudo snap install {name}" + (" --classic" if row and row.get("classic") else "")
+        return f"sudo snap install {shlex.quote(name)}" + (" --classic" if row and row.get("classic") else "")
 
     def remove(self, name):
-        return f"sudo snap remove {name}"
+        return f"sudo snap remove {shlex.quote(name)}"
 
     def upgrade(self, name):
-        return f"sudo snap refresh {name}"
+        return f"sudo snap refresh {shlex.quote(name)}"
 
     def upgrade_all(self):
         return "sudo snap refresh"
@@ -438,60 +470,97 @@ class Snap:
 class Brew:
     name = "brew"
     sudo = False
-    # where Homebrew lives: macOS Apple Silicon, macOS Intel, Linux
-    PREFIX = next((p for p in ("/opt/homebrew", "/usr/local", "/home/linuxbrew/.linuxbrew")
-                   if os.access(f"{p}/bin/brew", os.X_OK)), "/home/linuxbrew/.linuxbrew")
+    # where Homebrew lives: macOS Apple Silicon, macOS Intel, Linux (looked for again until found:
+    # Homebrew installed while the panes run counts from then on)
+    PREFIXES = ("/opt/homebrew", "/usr/local", "/home/linuxbrew/.linuxbrew")
+    PREFIX = "/home/linuxbrew/.linuxbrew"
     BIN = f"{PREFIX}/bin/brew"
     ENV = {**C_ENV, "HOMEBREW_NO_AUTO_UPDATE": "1", "HOMEBREW_NO_ENV_HINTS": "1", "HOMEBREW_NO_INSTALL_CLEANUP": "1",
            "HOMEBREW_NO_COLOR": "1"}
-    API_DIR = os.path.expanduser("~/.cache/Homebrew/api")
     error = ""
     _catalog = None          # (mtime, {name: (desc, version)}) from the API cache
+    _catalog_lock = threading.Lock()
+    casks = set()            # installed casks: their commands take --cask
 
     @classmethod
     def available(cls):
+        if not os.access(cls.BIN, os.X_OK):
+            found = next((p for p in cls.PREFIXES if os.access(f"{p}/bin/brew", os.X_OK)), None)
+            if found:
+                cls.PREFIX, cls.BIN = found, f"{found}/bin/brew"
         return os.access(cls.BIN, os.X_OK)
+
+    @staticmethod
+    def api_dir():
+        """Homebrew's API cache: $HOMEBREW_CACHE, else ~/Library/Caches/Homebrew (macOS) or
+        $XDG_CACHE_HOME/Homebrew (Linux)."""
+        cache = os.environ.get("HOMEBREW_CACHE")
+        if not cache:
+            cache = (os.path.expanduser("~/Library/Caches/Homebrew") if sys.platform == "darwin" else
+                     os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "Homebrew"))
+        return os.path.join(cache, "api")
 
     def brew(self, *args, timeout=120):
         return run_text(self.BIN, *args, env=self.ENV, timeout=timeout)
 
-    def installed_json(self):
+    _installed = (0.0, None)
+
+    def installed_json(self, fresh=30):
+        """`brew info --json=v2 --installed` (formulae and casks), kept `fresh` seconds ·
+        raises when brew does not answer (a pane then keeps what it had)."""
+        at, data = Brew._installed
+        if data is not None and time.monotonic() - at < fresh:
+            return data
+        out = self.brew("info", "--json=v2", "--installed")
         try:
-            return json.loads(self.brew("info", "--json=v2", "--installed"))
+            data = json.loads(out)
         except ValueError:
-            return {}
+            raise OSError("brew info did not answer")
+        Brew.casks = {c.get("token") for c in data.get("casks", [])}
+        Brew._installed = (time.monotonic(), data)
+        return data
 
     def mine(self):
         """What you asked for (installed on request), not what came along as a dependency."""
         rows = []
-        for f in self.installed_json().get("formulae", []):
+        data = self.installed_json(fresh=0)
+        for f in data.get("formulae", []):
             inst = (f.get("installed") or [{}])[0]
             if inst.get("installed_on_request"):
                 cellar = os.path.join(self.PREFIX, "Cellar", f["name"], inst.get("version", ""))
                 rows.append({"name": f["name"], "version": inst.get("version", ""),
                              "size": dir_size(cellar) if os.path.isdir(cellar) else None, "desc": f.get("desc") or ""})
+        for c in data.get("casks", []):           # apps (macOS): always yours, there are no cask dependencies
+            rows.append({"name": c.get("token", ""), "version": c.get("installed") or "", "size": None,
+                         "desc": c.get("desc") or (c.get("name") or [""])[0], "kind": "cask"})
         return rows
 
     def updates(self):
         try:
             d = json.loads(self.brew("outdated", "--json=v2"))
         except ValueError:
-            return []
+            raise OSError("brew outdated did not answer")
+        Brew.casks |= {c["name"] for c in d.get("casks", [])}
         return [{"name": f["name"], "old": ", ".join(f.get("installed_versions", [])),
                  "new": f.get("current_version", ""), "origin": "pinned" if f.get("pinned") else "homebrew",
-                 "security": False} for f in d.get("formulae", []) + d.get("casks", [])]
+                 "security": False, "held": bool(f.get("pinned"))} for f in d.get("formulae", []) + d.get("casks", [])]
 
     def catalog(self):
         """Every formula with its description and version, from Homebrew's own API cache
         (instant to search). Homebrew 7 keeps it in api/internal/packages.<platform>.jws.json,
         older ones in api/formula.jws.json."""
-        files = sorted(glob.glob(os.path.join(self.API_DIR, "internal", "packages.*.jws.json"))) or \
-            [os.path.join(self.API_DIR, "formula.jws.json")]
+        api = self.api_dir()
+        files = sorted(glob.glob(os.path.join(api, "internal", "packages.*.jws.json"))) or \
+            [os.path.join(api, "formula.jws.json")]
         path = files[0]
         try:
             mtime = os.path.getmtime(path)
         except OSError:
             return None
+        with Brew._catalog_lock:                  # one parse at a time (~130 MB while it runs)
+            return self._load_catalog(path, mtime)
+
+    def _load_catalog(self, path, mtime):
         if not Brew._catalog or Brew._catalog[0] != (path, mtime):
             try:
                 with open(path, encoding="utf-8") as f:
@@ -513,27 +582,30 @@ class Brew:
         if cat is not None:
             return [{"name": n, "desc": d, "installed": installed.get(n, "")} for n, (d, _) in cat.items()
                     if all(w in f"{n} {d}".lower() for w in words)]
-        found = []                       # no API cache yet: brew's own search (slower)
-        for line in self.brew("search", "--formula", "--desc", " ".join(words)).splitlines():
+        found = []                       # no API cache yet: brew's own search (slower), on the first
+        for line in self.brew("search", "--formula", "--desc", words[0]).splitlines():     # word, then all
             n, sep, d = line.partition(": ")
-            if sep and " " not in n:
+            if sep and " " not in n and all(w in f"{n} {d}".lower() for w in words):
                 found.append({"name": n, "desc": d, "installed": installed.get(n, "")})
         return found
 
     def info(self, name, width, note):
         try:
-            f = (json.loads(self.brew("info", "--json=v2", name)).get("formulae") or [None])[0]
+            d = json.loads(self.brew("info", "--json=v2", name))
         except ValueError:
-            f = None
+            d = {}
+        f = (d.get("formulae") or [None])[0]
+        if not f and d.get("casks"):
+            return self.cask_info(d["casks"][0], width, note)
         if not f:
-            return [f"  {YELLOW}Homebrew does not know a formula called {name}"]
+            return [f"  {YELLOW}Homebrew does not know a formula or cask called {name}"]
         inst = (f.get("installed") or [{}])[0] if f.get("installed") else None
         stable = (f.get("versions") or {}).get("stable", "")
         lines = [k("Package") + f"{BOLD}{TEXT}{name}{RESET}  {DIM}brew"]
         if inst:
             how = "you asked for it" if inst.get("installed_on_request") else "as a dependency"
             lines.append(k("Installed") + f"{GREEN}{inst.get('version')}{DIM}  {how}")
-            if stable and stable != inst.get("version"):
+            if f.get("outdated"):                 # brew's own answer (1.2.3_1 is not older than 1.2.3)
                 lines.append(k("Available") + f"{YELLOW}{stable}{DIM}  (update pending)")
         else:
             lines.append(k("Installed") + f"{DIM}no")
@@ -553,6 +625,24 @@ class Brew:
             lines += [f"  {BOLD}{BLUE}Caveats{RESET}", ""] + wrap_lines(f["caveats"], width)
         return lines
 
+    def cask_info(self, c, width, note):
+        inst = c.get("installed")
+        lines = [k("Package") + f"{BOLD}{TEXT}{c.get('token')}{RESET}  {DIM}brew · cask (an app)"]
+        lines.append(k("Installed") + (f"{GREEN}{inst}" if inst else f"{DIM}no"))
+        if c.get("outdated") or (not inst):
+            lines.append(k("Available") + (f"{YELLOW}{c.get('version')}{DIM}  (update pending)" if inst
+                                           else f"{TEXT}{c.get('version')}"))
+        if note:
+            lines.append(k("Why") + f"{YELLOW}{note}")
+        for key, label in (("homepage", "Homepage"), ("tap", "Tap")):
+            if c.get(key):
+                lines.append(k(label) + (f"{BLUE}" if key == "homepage" else f"{SUB}") + str(c[key]))
+        names = ", ".join(c.get("name") or [])
+        lines += ["", f"  {TEXT}{names}", f"  {SUB}{c.get('desc') or ''}", ""]
+        if c.get("caveats"):
+            lines += [f"  {BOLD}{BLUE}Caveats{RESET}", ""] + wrap_lines(c["caveats"], width)
+        return lines
+
     def files(self, name):
         out = self.brew("list", "--verbose", name)
         paths = [p for p in out.splitlines() if p.startswith("/")]
@@ -567,14 +657,17 @@ class Brew:
         rdeps = self.brew("uses", "--installed", name).split()
         return deps, sorted(rdeps)
 
+    def kind(self, name, row=None):
+        return " --cask" if (row or {}).get("kind") == "cask" or name in Brew.casks else ""
+
     def install(self, name, row=None):
-        return f"{self.BIN} install {name}"
+        return f"{self.BIN} install{self.kind(name, row)} {shlex.quote(name)}"
 
     def remove(self, name):
-        return f"{self.BIN} uninstall {name}"
+        return f"{self.BIN} uninstall{self.kind(name)} {shlex.quote(name)}"
 
     def upgrade(self, name):
-        return f"{self.BIN} upgrade {name}"
+        return f"{self.BIN} upgrade{self.kind(name)} {shlex.quote(name)}"
 
     def upgrade_all(self):
         return f"{self.BIN} upgrade"
@@ -619,10 +712,15 @@ def how(src, what):
     return " It asks for your password." if src.sudo else ""
 
 
+STAMP = "$(python3 -c 'import time; print(time.time_ns())')"     # macOS date has no %N
+
+
 def pkg_popup(app, title, command):
-    """Run a package command in a popup (sudo asks for the password there), then tell
-    every package pane to re-read."""
-    app.popup(title, f"{command}; tmux set -g @pkgs-changed \"$(date +%s%N)\"; printf '\\npress Enter'; read", h="60%")
+    """Run a package command in a popup (sudo asks for the password there), say how it went,
+    then tell every package pane to re-read."""
+    app.popup(title, f"{command}; rc=$?; tmux set -g @pkgs-changed \"{STAMP}\"; "
+                     f"if [ $rc -eq 0 ]; then printf '\\n✅ done'; else printf '\\n❌ failed (exit %s)' $rc; fi; "
+                     f"printf ' · press Enter'; read -r _", h="60%")
 
 
 def pkgs_changed(app, stamp):
@@ -640,7 +738,7 @@ class SourcesPane:
     the title row (all · apt · snap · brew, when there is more than one source), slow
     sources answered in the background, and a re-read after any package command."""
     src_filter = "all"
-    watch = ("@pkgs-changed",)
+    watch = ("@pkgs-changed", "@pkgs-notes")
 
     def start_sources(self):
         self.bg = Background(self.wake)
@@ -667,10 +765,17 @@ class SourcesPane:
         return f"{YELLOW}asking {' · '.join(busy)}…{RESET}" if busy else ""
 
     def changed(self):
-        """After a package command: forget cached answers so everything is asked again."""
+        """After a package command: forget cached answers so everything is asked again ·
+        after a note was edited only the notes are read again (no source is asked)."""
         if pkgs_changed(self, self.opts.get("@pkgs-changed")):
+            Brew._installed = (0.0, None)
             self.bg.forget()
             return True
+        notes = self.opts.get("@pkgs-notes")
+        if notes != getattr(self, "_notes_seen", notes):
+            self._notes_seen = notes
+            return True
+        self._notes_seen = notes
         return False
 
 
@@ -678,8 +783,10 @@ class SourcesPane:
 def installed_version(src, name):
     """Version of name if src has it installed at all (dependencies too), else ''."""
     if src.name == "apt":
-        out = run_text("dpkg-query", "-W", "-f", "${Status}\t${Version}\t${binary:Summary}", name)
-        st, _, rest = out.partition("\t")
+        if any(c in name for c in "*?[]"):         # dpkg-query reads those as a pattern
+            return ""
+        out = run_text("dpkg-query", "-W", "-f", "${Status}\t${Version}\t${binary:Summary}\n", name)
+        st, _, rest = (out.splitlines() or [""])[0].partition("\t")
         return rest if st.endswith(" installed") else ""
     if src.name == "snap":
         s = src.installed().get(name)

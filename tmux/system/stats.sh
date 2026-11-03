@@ -17,7 +17,7 @@ if [[ -r /proc/stat ]]; then
   used_kb=$(( mt - ma ))
 else                                                   # macOS
   cores=$(sysctl -n hw.ncpu)
-  cpu=$(ps -A -o %cpu= | awk -v n="$cores" '{ s += $1 } END { c = s / n; if (c > 100) c = 100; printf "%d", c }')
+  cpu=$(LC_ALL=C ps -A -o %cpu= | awk -v n="$cores" '{ s += $1 } END { c = s / n; if (c > 100) c = 100; printf "%d", c }')
   mt=$(( $(sysctl -n hw.memsize) / 1024 ))
   used_kb=$(vm_stat | awk '
     /page size of/            { size = $8 }

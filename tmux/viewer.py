@@ -91,7 +91,7 @@ class Viewer:
         """Out of sight it does nothing: the key and its contents are read once it is in sight
         (the system session starts with every tab; tmux wakes the pane, see tmuxlink.note_wake)."""
         key = self.look()
-        if not self.visible:
+        if not self.visible or self.menu:        # a menu open: what it would copy stays as it was
             return
         stale = self.refresh_every and time.monotonic() - self.loaded_at > self.refresh_every
         if force or key != self.key or stale:
@@ -212,8 +212,10 @@ class Viewer:
                 seen.add(n)
                 out.append(self.source_text(n))
         if out:
-            tmuxlink.copy("\n".join(out))
-            self.flash(f"{ICON_COPY} copied {len(out)} line{'s' if len(out) != 1 else ''} to the clipboard")
+            if tmuxlink.copy("\n".join(out)):
+                self.flash(f"{ICON_COPY} copied {len(out)} line{'s' if len(out) != 1 else ''} to the clipboard")
+            else:
+                self.flash("could not copy: tmux refused it")
 
     def row_at(self, y):
         i = self.top + (y - TOP)
@@ -383,8 +385,8 @@ class BackgroundViewer(Viewer):
 def run(viewer_class):
     try:
         with Screen() as screen:
+            tmuxlink.note_wake()      # first: a wake sent while the viewer starts is not lost
             v = viewer_class(screen)
-            tmuxlink.note_wake()
             v._size = screen.size()
             v.draw()
             for ev in screen.events(tick=v.interval if v.visible else HIDDEN_CHECK):
@@ -412,7 +414,10 @@ def run(viewer_class):
                     # only a real change of size closes an open menu
                     size = screen.size()
                     if size != getattr(v, "_size", None):
+                        width_changed = size[1] != getattr(v, "_size", (0, 0))[1]
                         v._size, v.menu = size, None
+                        if width_changed and v.key:            # wrapped for another width: again
+                            v.reload()
                     v.zoomed = tmuxlink.pane_state("")[0]   # zoom / restore resize the pane
                 v.draw()
     except SystemExit as e:

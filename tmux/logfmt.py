@@ -79,17 +79,30 @@ def http_line(d):
     return f"{TEXT}{method} {uri}{RESET} {DIM}→{RESET} {status_colour(status)}{status}{RESET}{DIM}{ms}{size}{RESET}"
 
 
+NUMERIC_LEVEL = [(50, "error"), (40, "warning"), (30, "info"), (20, "debug"), (0, "debug")]   # pino / bunyan
+
+
+def json_level(d):
+    """The level of a JSON line: level / lvl / severity / levelname / level_name / ECS log.level,
+    a word or pino's and bunyan's numbers (10 trace … 60 fatal)."""
+    log = d.get("log") if isinstance(d.get("log"), dict) else {}
+    raw = next((d[k] for k in ("level", "lvl", "severity", "levelname", "level_name") if d.get(k) not in (None, "")),
+               log.get("level", ""))
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return next(name for floor, name in NUMERIC_LEVEL if raw >= floor)
+    return LEVEL_WORDS.get(str(raw).lower())
+
+
 def from_json(d, stamp=None):
-    lvl_raw = str(d.get("level") or d.get("lvl") or d.get("severity") or d.get("level_name") or "").lower()
-    lvl = LEVEL_WORDS.get(lvl_raw)
+    lvl = json_level(d)
     when = next((d[k] for k in ("ts", "time", "timestamp", "@timestamp", "datetime") if k in d), None)
     logger = d.get("logger") or d.get("channel") or d.get("name") or ""
     msg = d.get("msg") or d.get("message") or ""
     if str(logger).startswith("http.log.access") and isinstance(d.get("request"), dict):
         body, logger = http_line(d), "http"
     else:
-        skip = {"level", "lvl", "severity", "level_name", "ts", "time", "timestamp", "@timestamp", "datetime",
-                "logger", "channel", "name", "msg", "message"}
+        skip = {"level", "lvl", "severity", "level_name", "levelname", "ts", "time", "timestamp", "@timestamp",
+                "datetime", "logger", "channel", "name", "msg", "message"}
         extra = []
         for k, v in d.items():
             if k in skip:
@@ -132,9 +145,11 @@ def parse(line, stamp=None):
     if m and m[2].lower() in LEVEL_WORDS:
         lvl = LEVEL_WORDS[m[2].lower()]
         return lvl, f"{badge(lvl)} {DIM}{short_time(stamp or m[1])}{RESET} {TEXT}{m[3]}{RESET}"
-    if "level=" in s or "msg=" in s:                       # logfmt
-        pairs = dict((k, v.strip('"')) for k, v in LOGFMT_PAIR.findall(s))
-        if pairs.get("msg") or pairs.get("level"):
+    if "level=" in s or "msg=" in s:                       # logfmt: only when the line is (mostly) pairs
+        found = LOGFMT_PAIR.findall(s)
+        pairs = dict((k, v.strip('"')) for k, v in found)
+        covered = sum(len(k) + len(v) + 1 for k, v in found)
+        if (pairs.get("msg") or pairs.get("level")) and covered >= 0.8 * len(s.replace(" ", "")):
             lvl = LEVEL_WORDS.get(pairs.get("level", "").lower())
             when = pairs.get("time") or pairs.get("ts")
             extra = " ".join(f"{k}={v}" for k, v in pairs.items() if k not in ("time", "ts", "level", "msg"))

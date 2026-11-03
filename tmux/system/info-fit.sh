@@ -9,6 +9,8 @@
 #  · btop is restarted only when the boxes that fit change (btop.sh picks them)
 # info-fit.sh <resources pane> <btop pane> <rows for resources>
 res=$1 btop=$2 rows=$3
+# zoomed: resizing a pane would undo the zoom (tmux unzooms on resize-pane): the next resize fits it
+[[ $(tmux display -p -t "$1" '#{window_zoomed_flag}' 2>/dev/null) == 1 ]] && exit 0
 W=$(tmux display -p -t "$btop" '#{window_width}' 2>/dev/null) || exit 0
 if   (( W >= 191 )); then bw=$(( W - 111 ))
 elif (( W >= 141 )); then bw=$(( W - 81 )); (( bw > 70 )) && bw=70; (( bw < 60 )) && bw=60

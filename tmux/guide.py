@@ -18,6 +18,7 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import tmuxlink
 from tui import (ACCENT, BOLD, CLEAR_EOL, CRUST, DIM, GREEN, HOVER, RESET, SUB, SURFACE, TEXT, THUMB,
                  TRACK, YELLOW, Screen, bg, cut, ellipsis, highlight, vlen)
 
@@ -231,8 +232,7 @@ class Guide:
         if not os.environ.get("TMUX"):
             print("Open tmux (terminal) to run actions from the guide.")
             sys.exit(0)
-        client = subprocess.run(["tmux", "display", "-p", "#{client_name}"],
-                                capture_output=True, text=True).stdout.strip()
+        client = tmuxlink.client()                         # the terminal that opened the guide
         if cmd == "@picker":
             os.execvp("zsh", ["zsh", os.path.join(os.path.dirname(os.path.realpath(__file__)), "terminal.zsh"), "pick"])
         if cmd.startswith("@shell:"):

@@ -8,6 +8,7 @@ import threading
 import time
 
 STALE = float("-inf")
+RETRY = 15
 
 
 class Background:
@@ -15,11 +16,14 @@ class Background:
     in a thread once it is older than ttl. on_ready() runs when an answer arrives.
     Keys are tuples: loading() names what is being asked by their first item.
     forget() keeps the last answer on screen but asks again at once; an answer that was
-    already on its way when forget() was called counts as stale, so it is asked once more."""
+    already on its way when forget() was called counts as stale, so it is asked once more.
+    When fn raises (no network, a command that timed out) the last good answer stays and it
+    is asked again after RETRY seconds: a failure never shows as "nothing"."""
 
     def __init__(self, on_ready, fallback=list):
         self.data, self.busy, self.on_ready, self.fallback = {}, set(), on_ready, fallback
         self.gen = {}                            # key → bumped by forget(): answers from before are stale
+        self.ttl = {}
         self.lock = threading.Lock()
 
     def get(self, key, fn, ttl):
@@ -28,16 +32,23 @@ class Background:
             if key in self.busy or time.monotonic() - at < ttl:
                 return value
             self.busy.add(key)
+            self.ttl[key] = ttl
             gen = self.gen.get(key, 0)
 
         def work():
+            failed = False
             try:
                 result = fn()
             except Exception:                    # a source failing must not take the pane down
-                result = self.fallback()
+                result, failed = self.fallback(), True
             with self.lock:
                 fresh = self.gen.get(key, 0) == gen
-                self.data[key] = (result, time.monotonic() if fresh else STALE)
+                old = self.data.get(key)
+                if failed and old is not None:   # keep what was known, ask again soon
+                    self.data[key] = (old[0], time.monotonic() - self.ttl.get(key, RETRY) + RETRY)
+                else:
+                    self.data[key] = (result, (time.monotonic() - (self.ttl.get(key, RETRY) - RETRY if failed else 0))
+                                      if fresh else STALE)
                 self.busy.discard(key)
             self.on_ready()
         threading.Thread(target=work, daemon=True).start()

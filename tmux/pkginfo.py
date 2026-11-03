@@ -21,19 +21,19 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import pkgsrc
 from pkgsrc import note_key, pkgs_changed, read_notes, split_id
 from tui import BLUE, BOLD, DIM, RESET, SUB, TEXT, YELLOW
-from viewer import Viewer, run
+from viewer import BackgroundViewer, run
 
 KEEP = 300               # seconds an answer is reused (also changes made outside these panes show up)
 
 
-class PkgInfo(Viewer):
+class PkgInfo(BackgroundViewer):
     icon = "\U000F03D7"
     title = "Package"
     option = "@pkg-selected"
     tabs = ["Info", "Files", "Depends"]
     interval = 0.3
     empty = "highlight a package in Packages, Search or Updates"
-    watch = ("@pkgs-changed",)
+    watch = ("@pkgs-changed", "@pkgs-notes")
 
     def __init__(self, screen):
         self.cache = {}
@@ -42,11 +42,15 @@ class PkgInfo(Viewer):
     def tick(self):
         super().tick()
         # something was installed / removed: show it as it is now
-        if self.visible and pkgs_changed(self, self.opts.get("@pkgs-changed")):
+        notes = self.opts.get("@pkgs-notes")
+        if self.visible and (pkgs_changed(self, self.opts.get("@pkgs-changed"))
+                             or notes != getattr(self, "_notes_seen", notes)):
             self.cache.clear()
+            self._bgv.forget()
             self.reload()
+        self._notes_seen = notes
 
-    def load(self, key, tab, width):
+    def compute(self, key, tab, width):            # in a thread (BackgroundViewer): brew and the snap store are slow
         src_name, name = split_id(key)
         src = pkgsrc.source(src_name)
         if not src:

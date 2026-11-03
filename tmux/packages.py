@@ -24,7 +24,7 @@ import pkgsrc
 import tmuxlink
 from pkgsrc import SourcesPane, human, note_key, pkg_popup, read_notes, write_notes
 from table import Column, TableApp, run
-from tui import DIM, SUB, TEXT, YELLOW
+from tui import DIM, RESET, SUB, TEXT, YELLOW
 
 ICON = dict(note="\U000F03EB", info="\U000F02FD", files="\U000F0214", copy="\U000F018F", remove="\U000F0A7A")
 
@@ -62,7 +62,9 @@ class Packages(SourcesPane, TableApp):
         return rows
 
     def summary(self):
-        return self.loading_note()
+        apt = pkgsrc.source("apt")
+        base = f"{YELLOW}no base list: every manual apt package shows{RESET}" if apt and apt.error else ""
+        return " · ".join(t for t in (base, self.loading_note()) if t)
 
     def row_colour(self, r):
         return TEXT if r["why"] else SUB
@@ -74,10 +76,6 @@ class Packages(SourcesPane, TableApp):
         return (f"{why}{DIM}{r['src']} {r.get('version', '')} · {len(self.all)} packages · "
                 f"{sum(1 for x in self.all if x['why'])} with notes{base}")
 
-    def footer(self, y):
-        if self.error and not (self.ask or self.prompt or self.msg):
-            return f" {YELLOW}{self.error}"
-        return super().footer(y)
 
     def menu_title(self, r):
         return f"{r['name']} · {r['src']}"
@@ -110,7 +108,7 @@ class Packages(SourcesPane, TableApp):
             else:
                 notes.pop(key, None)
             write_notes(notes)
-            tmuxlink.put("@pkgs-changed", str(time.time_ns()))     # the other panes show it too
+            tmuxlink.put("@pkgs-notes", str(time.time_ns()))       # the other panes show it (no source asked again)
             self.flash(f"note saved for {r['name']}" if text else f"note removed for {r['name']}")
             self.reload()
         self.ask_text(f"Why is {r['name']} installed?", r["why"], save)

@@ -19,6 +19,7 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import tmuxlink
 from tui import (BLUE, BOLD, CLEAR_EOL, CRUST, DANGER_BG, DIM, GREEN, ACCENT, RED, RESET, SUB, SURFACE,
                  TEXT, YELLOW, Menu, Screen, cut, ellipsis, highlight, vlen)
 
@@ -84,6 +85,15 @@ def tmux(*args):
     return subprocess.run(["tmux", *args], capture_output=True, text=True)
 
 
+def session_of(client):
+    """The session a client shows (display -c only says where a message goes, not whose #S)."""
+    for line in tmux("list-clients", "-F", "#{client_name}\t#{client_session}").stdout.splitlines():
+        name, _, sess = line.partition("\t")
+        if name == client:
+            return sess
+    return ""
+
+
 def tilde(path):
     return "~" + path[len(HOME):] if path == HOME or path.startswith(HOME + "/") else path
 
@@ -97,8 +107,8 @@ class Picker:
     def __init__(self, screen):
         self.screen = screen
         self.inside = bool(os.environ.get("TMUX"))
-        self.client = tmux("display", "-p", "#{client_name}").stdout.strip() if self.inside else ""
-        self.here = tmux("display", "-p", "#S").stdout.strip() if self.inside else ""
+        self.client = tmuxlink.client() if self.inside else ""        # the terminal that opened the popup
+        self.here = session_of(self.client) if self.inside else ""
         self.cwd = os.getcwd()
         self.query = ""
         self.top = 0
@@ -337,7 +347,7 @@ class Picker:
         if self.inside and name == self.here:
             # this popup's own session: tmux has moved the client to another one and the
             # popup stays open, so just carry on picking from what is left
-            self.here = tmux("display", "-p", "-c", self.client, "#S").stdout.strip()
+            self.here = session_of(self.client)
         self.msg = f"{GREEN}closed «{name}»"
         self.refresh()
         if not self.sessions:            # nothing left: tmux has detached us
@@ -346,6 +356,9 @@ class Picker:
     def rename(self):
         new, old, self.mode = clean_name(self.text), self.target, "list"
         if not new or new == old:
+            return
+        if new == MONITOR:                       # tmux/system.sh would take it for the monitor
+            self.msg = f"{YELLOW}«{MONITOR}» is the system monitor's name"
             return
         res = tmux("rename-session", "-t", f"={old}", new)
         d = read_descriptions()
@@ -498,7 +511,9 @@ class Picker:
                     self.describe()
                 elif mode == "new-name":
                     new = clean_name(self.text)
-                    if new and any(s[0] == new for s in self.sessions):
+                    if new == MONITOR and not any(s[0] == new for s in self.sessions):
+                        self.msg, self.mode = f"{YELLOW}«{MONITOR}» is the system monitor's name", "list"
+                    elif new and any(s[0] == new for s in self.sessions):
                         self.open(new)
                     elif new:
                         self.new_name, self.mode, self.text = new, "new-dir", tilde(self.cwd)

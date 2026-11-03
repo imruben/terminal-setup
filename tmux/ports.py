@@ -17,6 +17,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -29,20 +30,57 @@ ICON_WEB, ICON_COPY, ICON_STOP, ICON_KILL, ICON_PROC = ("\U000F059F", "\U000F018
 ICON_DOCKER = "\U000F0868"
 
 
+_docker = [0.0, {}]
+
+
 def docker_ports():
-    """Published host port → container name (those ports belong to docker-proxy, i.e. root)."""
+    """{(proto, host port): [(host ip, container name)]} of the published ports (they belong
+    to docker-proxy: root, or Docker Desktop's backend) · kept 10 s, and a Docker that does
+    not answer within 2 s (starting, hung) counts as no containers."""
+    if time.monotonic() - _docker[0] < 10:
+        return _docker[1]
     try:
         out = subprocess.run(["docker", "ps", "--format", "{{.Names}}|{{.Ports}}"], capture_output=True,
-                             text=True, timeout=5).stdout
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return {}
+                             text=True, timeout=2, stdin=subprocess.DEVNULL).stdout
+    except (subprocess.TimeoutExpired, OSError):
+        out = ""
     found = {}
     for line in out.splitlines():
         name, _, ports = line.partition("|")
-        for a, b in re.findall(r":(\d+)(?:-(\d+))?->", ports):      # ranges: 8000-8002->…
+        # 0.0.0.0:8000-8002->8000-8002/tcp · [::]:53->53/udp · 127.0.0.2:8080->80/tcp
+        for ip, a, b, proto in re.findall(r"(\[[^\]]*\]|[\d.]*):(\d+)(?:-(\d+))?->[\d-]+/(\w+)", ports):
             for port in range(int(a), int(b or a) + 1):
-                found[port] = name
+                found.setdefault((proto, port), []).append((ip.strip("[]"), name))
+    _docker[0], _docker[1] = time.monotonic(), found
     return found
+
+
+def container_for(dock, proto, addr, port):
+    """The container that publishes this socket: the one on its exact IP, else on all of them."""
+    owners = dock.get((proto, port), [])
+    ip = addr.strip("[]").split("%")[0]
+    exact = [n for i, n in owners if i == ip]
+    anyip = [n for i, n in owners if i in ("", "0.0.0.0", "::")]
+    return (exact or anyip or [None])[0]
+
+
+def start_of(pid):
+    """When a process started (/proc/PID/stat field 22) · None when gone (or not Linux)."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            stat = f.read().decode("utf-8", "replace")
+        return int(stat[stat.rindex(")") + 2:].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def state_of(pid):
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            stat = f.read().decode("utf-8", "replace")
+        return stat[stat.rindex(")") + 2:].split()[0]
+    except (OSError, ValueError, IndexError):
+        return ""
 PROC = re.compile(r'\("([^"]+)",pid=(\d+)')
 
 
@@ -50,7 +88,11 @@ def sockets():
     """Listening sockets as (proto, "addr:port", pid or None, program or "?").
     Linux: ss · macOS: lsof (without sudo it sees your own programs only, like ss)."""
     if shutil.which("ss"):
-        out = subprocess.run(["ss", "-tulpnH"], capture_output=True, text=True).stdout
+        try:
+            out = subprocess.run(["ss", "-tulpnH"], capture_output=True, text=True, timeout=5,
+                                 stdin=subprocess.DEVNULL, errors="replace").stdout
+        except (subprocess.TimeoutExpired, OSError):
+            return
         for line in out.splitlines():
             parts = line.split(None, 6)
             if len(parts) < 5:
@@ -59,8 +101,13 @@ def sockets():
             yield parts[0], parts[4], (int(m[2]) if m else None), (m[1] if m else "?")
         return
     # two calls: lsof's TCP state filter would also drop every UDP socket
-    out = "".join(subprocess.run(["lsof", "-nP", *sel, "-F", "pcPn"], capture_output=True, text=True).stdout
-                  for sel in (["-iTCP", "-sTCP:LISTEN"], ["-iUDP"]))
+    out = ""
+    for sel in (["-iTCP", "-sTCP:LISTEN"], ["-iUDP"]):
+        try:
+            out += subprocess.run(["lsof", "-nP", *sel, "-F", "pcPn"], capture_output=True, text=True, timeout=8,
+                                  stdin=subprocess.DEVNULL, errors="replace").stdout
+        except (subprocess.TimeoutExpired, OSError):
+            pass
     pid, cmd, proto = None, "?", ""
     for line in out.splitlines():
         tag, val = line[:1], line[1:]
@@ -79,7 +126,7 @@ def tmux(*args):
 
 
 def where(addr):
-    a = addr.strip("[]").split("%")[0]
+    a = addr.split("%")[0].strip("[]")          # [fe80::1]%eth0 → fe80::1
     if a in ("0.0.0.0", "::", "*"):
         return "everyone"
     if a in ("127.0.0.1", "::1", "localhost") or a.startswith("127."):
@@ -92,6 +139,7 @@ class Ports(TableApp):
     title = "Ports"
     noun = "listening"
     sort_key = "port"
+    search_keys = ("port", "proto", "where", "addr", "pid", "name")
     columns = [Column("port", "PORT", 6, "r"),
                Column("proto", "PROTO", 5, optional=True),
                Column("where", "OPEN TO", 15, min=8),
@@ -105,15 +153,17 @@ class Ports(TableApp):
             addr, _, port = local.rpartition(":")
             if not port.isdigit():
                 continue
-            container = dock.get(int(port)) if proto == "tcp" else None
+            container = container_for(dock, proto, addr, int(port))
             if container:
                 name = f"docker:{container}"
             key = (proto, port, where(addr), pid)      # 127.0.0.53 and 127.0.0.54 are the same to you
             if key in seen:
                 continue
             seen.add(key)
-            rows.append({"id": f"{proto}|{addr}|{port}", "port": int(port), "proto": proto, "addr": addr,
-                         "where": where(addr), "pid": pid, "name": name, "container": container})
+            # the pid is part of the id: two programs can listen on one port (SO_REUSEPORT)
+            rows.append({"id": f"{proto}|{addr}|{port}|{pid}", "port": int(port), "proto": proto, "addr": addr,
+                         "where": where(addr), "pid": pid, "name": name, "container": container,
+                         "start": start_of(pid) if pid else None})
         return rows
 
     def order(self, rows):
@@ -149,10 +199,7 @@ class Ports(TableApp):
                     (f"{ICON_COPY}  Copy localhost:{r['port']}", "c", lambda: self.copy(f"localhost:{r['port']}")),
                     ("", "", None),
                     (f"{ICON_DOCKER}  Show the container", "p", lambda: self.show_container(c)),
-                    (f"{ICON_STOP}  Stop the container…", "s", lambda: self.confirm(
-                        f"Stop the container {c}, which publishes :{r['port']}?",
-                        lambda: self.background(r, "stopping", ["docker", "stop", c],
-                                                lambda ok, out: self.flash(f"{c}: stop done" if ok else out, ok)), r))]
+                    (f"{ICON_STOP}  Stop the container…", "s", lambda: self.ask_stop_container(r))]
         return [(f"{ICON_WEB}  Open http://localhost:{r['port']}", "o", (lambda: self.browse(r)) if tcp else None),
                 (f"{ICON_COPY}  Copy localhost:{r['port']}", "c", lambda: self.copy(f"localhost:{r['port']}")),
                 ("", "", None),
@@ -172,8 +219,20 @@ class Ports(TableApp):
         self.flash(f"{name} → docker tab")
 
     def on_delete(self, r):
-        if r["pid"] is not None:
+        """A container's port: stop the container (its owner is Docker's proxy or backend, whose
+        end would take every container with it) · else the program, when it is yours to stop."""
+        if r["container"]:
+            self.ask_stop_container(r)
+        elif r["pid"] is not None:
             self.ask_kill(r, signal.SIGTERM)
+        else:
+            self.flash(f":{r['port']} belongs to another user (root): not stopped from here", ok=False)
+
+    def ask_stop_container(self, r):
+        c = r["container"]
+        self.confirm(f"Stop the container {c}, which publishes :{r['port']}?",
+                     lambda: self.background(r, "stopping", ["docker", "stop", c],
+                                             lambda ok, out: self.flash(f"{c}: stopped" if ok else out, ok)), r)
 
     def ask_kill(self, r, sig):
         what = f"{r['name']} ({r['pid']}), which listens on :{r['port']}"
@@ -181,8 +240,16 @@ class Ports(TableApp):
         self.confirm(q, lambda: self.kill(r, sig), r)
 
     def kill(self, r, sig):
+        """Only if that pid is still the same program (a pid is reused once its process ends) ·
+        a stopped one (Ctrl+Z) also gets SIGCONT, or the SIGTERM would wait."""
+        if r.get("start") is not None and start_of(r["pid"]) != r["start"]:
+            self.flash(f"{r['name']} ({r['pid']}) is not running any more: nothing sent")
+            self.reload()
+            return
         try:
             os.kill(r["pid"], sig)
+            if sig == signal.SIGTERM and state_of(r["pid"]) in ("T", "t"):
+                os.kill(r["pid"], signal.SIGCONT)
             self.flash(f"sent {sig.name} to {r['name']} ({r['pid']}) · port :{r['port']}")
         except ProcessLookupError:
             self.flash(f"{r['name']} had already finished")
@@ -191,7 +258,8 @@ class Ports(TableApp):
         self.reload()
 
     def browse(self, r):
-        url = f"http://localhost:{r['port']}"
+        scheme = "https" if r["port"] in (443, 8443) else "http"
+        url = f"{scheme}://localhost:{r['port']}"
         if tmuxlink.open_url(url):
             self.flash(f"opening {url} in the browser")
         else:

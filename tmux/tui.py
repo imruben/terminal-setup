@@ -42,25 +42,43 @@ def cw(ch):
 
 
 def vlen(s):
-    """Visible width in cells."""
+    """Visible width in cells · an emoji made wide by U+FE0F (❤️ ✔️) counts 2, as tmux draws it."""
     t = ANSI.sub("", s)
-    return len(t) if t.isascii() else sum(cw(c) for c in t)
+    if t.isascii():
+        return len(t)
+    n, prev = 0, 0
+    for c in t:
+        w = 1 if c == "\ufe0f" and prev == 1 else cw(c)
+        n += w
+        prev = w if c != "\ufe0f" else 0
+    return n
+
+
+KEEP_CODE = re.compile(r"\x1b\[[0-9;]*m|\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)")    # colours, links
 
 
 def cut(s, n):
-    """First n visible cells of s, keeping its colour codes, so no line ever wraps."""
-    out, vis, i, full = [], 0, 0, False
+    """First n visible cells of s, keeping its colour codes (and links), so no line ever wraps ·
+    a tab is one space and other control characters show as ?, so the width is what tmux draws."""
+    out, vis, i, full, prev = [], 0, 0, False, 0
     while i < len(s):
         m = ANSI.match(s, i)
         if m:
-            out.append(m.group())
+            if KEEP_CODE.fullmatch(m.group()):
+                out.append(m.group())             # other sequences (cursor moves…) are dropped
             i = m.end()
             continue
         if not full:
-            w = cw(s[i])
+            ch = s[i]
+            if ch == "\t":
+                ch = " "
+            elif ch < " " or ch == "\x7f":
+                ch = "?"
+            w = 1 if ch == "\ufe0f" and prev == 1 else cw(ch)
             if vis + w <= n:
-                out.append(s[i])
+                out.append(ch)
                 vis += w
+                prev = w if ch != "\ufe0f" else 0
             else:
                 full = True               # a wide character that does not fit ends the text
         i += 1
@@ -269,14 +287,21 @@ class Screen:
         self.fd = sys.stdin.fileno()
         self.saved = termios.tcgetattr(self.fd)
         tty.setraw(self.fd)
-        sys.stdout.write("\x1b[?1049h\x1b[?25l\x1b[?1003h\x1b[?1006h")
+        # no autowrap: a line that is wider than measured is cut by the terminal, it never wraps
+        # and scrolls the title row away · bracketed paste: pasted text is text, not keys
+        sys.stdout.write("\x1b[?1049h\x1b[?25l\x1b[?1003h\x1b[?1006h\x1b[?7l\x1b[?2004h")
         sys.stdout.flush()
         # resize (SIGWINCH) and "your tab is in sight again" (SIGUSR1, see tmuxlink.note_wake):
         # the signals only poke a pipe, the event loop handles them
         self.wake_r, wake_w = os.pipe()
         os.set_blocking(wake_w, False)
-        signal.signal(signal.SIGWINCH, lambda *_: os.write(wake_w, b"."))
-        signal.signal(signal.SIGUSR1, lambda *_: os.write(wake_w, b"v"))
+        def poke(byte):
+            try:
+                os.write(wake_w, byte)
+            except OSError:                       # the pipe is full: a wake is pending anyway
+                pass
+        signal.signal(signal.SIGWINCH, lambda *_: poke(b"."))
+        signal.signal(signal.SIGUSR1, lambda *_: poke(b"v"))
         self.tick = None
         return self
 
@@ -287,7 +312,7 @@ class Screen:
     def restore(self):
         if self.saved is None:
             return
-        sys.stdout.write("\x1b[?1003l\x1b[?1006l\x1b[?25h\x1b[?1049l")
+        sys.stdout.write("\x1b[?2004l\x1b[?7h\x1b[?1003l\x1b[?1006l\x1b[?25h\x1b[?1049l")
         sys.stdout.flush()
         termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
         self.saved = None
@@ -321,8 +346,8 @@ class Screen:
             wait = max(0.0, due - now) if due else None
             r, _, _ = select.select([self.fd, self.wake_r], [], [], wait)
             if due and time.monotonic() >= due:
-                due = time.monotonic() + self.tick
                 yield ("tick",)
+                due = time.monotonic() + (self.tick or 0)    # from the end of the work: never back to back
             if not r:
                 continue
             if self.wake_r in r:
@@ -372,8 +397,19 @@ def cut_off(data):
     return None
 
 
+PASTE = re.compile(rb"\x1b\[200~(.*?)(?:\x1b\[201~|$)", re.S)
+
+
 def parse(data):
     while data:
+        m = PASTE.match(data)
+        if m:                            # pasted: plain text (newlines and control keys become spaces)
+            text = m[1].decode("utf-8", "replace")
+            text = "".join(" " if c < " " or c == "\x7f" else c for c in text).strip()
+            if text:
+                yield ("char", text)
+            data = data[m.end():]
+            continue
         m = MOUSE.match(data)
         if m:
             yield ("mouse", int(m[1]), int(m[2]), int(m[3]), m[4] == b"m")

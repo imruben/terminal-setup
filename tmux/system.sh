@@ -32,9 +32,14 @@ D=$TERMINAL_SETUP/tmux/system
 KEEP="$D/keep.sh"
 # Resources: header, CPU, RAM, swap, [GPU], WSL disk, C:, Net, Web
 RES_ROWS=8; { command -v nvidia-smi || [[ -x /usr/lib/wsl/lib/nvidia-smi ]]; } &>/dev/null && RES_ROWS=9
-sock=$(tmux display -p '#{socket_path}' 2>/dev/null); sock=${sock:-${TMUX%%,*}}
+# one lock per tmux server, known before the server runs (so `terminal system` with no server and
+# the config's own ensure take the same one): the socket's path, as tmux would make it
+sock=${TMUX%%,*}
+[[ -z $sock ]] && sock=$(tmux display -p '#{socket_path}' 2>/dev/null)
+[[ -z $sock ]] && sock=${TMUX_TMPDIR:-/tmp}/tmux-$UID/default
 key=${sock//\//_}
-LOCK=${XDG_RUNTIME_DIR:-/tmp}/tmux-system-$UID${key:+-$key}.lock   # one lock per tmux server
+run_dir=${XDG_RUNTIME_DIR:-/tmp}; [[ -d $run_dir && -w $run_dir ]] || run_dir=/tmp
+LOCK=$run_dir/tmux-system-$UID-$key.lock
 
 build() {
   local py="python3 -I $TERMINAL_SETUP/tmux" sh="${SHELL:-zsh}"
@@ -110,7 +115,7 @@ healthy() {
 # Serialise ensure / restart (hooks and new tabs may run them at the same time). The lock
 # lives in a subshell so it is released as soon as the work is done, never held by an
 # attached client; -w 5 so nothing can ever wait on it for long.
-locked() { ( flock -w 5 9; "$@" ) 9>"$LOCK"; }
+locked() { ( flock -w 5 9 || exit 0; "$@" ) 9>"$LOCK"; }   # another build still running after 5 s: it does it
 
 ensure_now() {
   if tmux has-session -t "=$S" 2>/dev/null; then
@@ -122,6 +127,7 @@ ensure_now() {
     build
     [[ -n $was ]] && tmux select-window -t "$S:$was" 2>/dev/null
     tmux list-clients -t "$S-old" -F '#{client_name}' | while read -r c; do tmux switch-client -c "$c" -t "=$S"; done
+    keep_own_tabs
     tmux kill-session -t "=$S-old"
   else
     build
@@ -134,7 +140,18 @@ restart_now() {
   build
   [[ -n $was ]] && tmux select-window -t "$S:$was" 2>/dev/null
   tmux list-clients -t "$S-old" -F '#{client_name}' 2>/dev/null | while read -r c; do tmux switch-client -c "$c" -t "=$S"; done
+  keep_own_tabs
   tmux kill-session -t "=$S-old" 2>/dev/null
+}
+
+# Tabs of your own inside the monitor (no pane of theirs is a monitor pane) move to the new
+# one instead of going with the old session
+keep_own_tabs() {
+  local w labels
+  tmux list-windows -t "=$S-old" -F '#{window_id}' 2>/dev/null | while read -r w; do
+    labels=$(tmux list-panes -t "$w" -F '#{@label}' 2>/dev/null | tr -d '\n')
+    [[ -z $labels ]] && tmux move-window -s "$w" -t "$S:" 2>/dev/null
+  done
 }
 
 # Session descriptions (picker → Describe…) live in ~/.tmux/descriptions.tsv; put them back

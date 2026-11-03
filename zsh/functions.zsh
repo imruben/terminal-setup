@@ -17,12 +17,14 @@ update() {
   # tmux plugins (tpm reads the list from the running server)
   [[ -x ~/.tmux/plugins/tpm/bin/update_plugins ]] && tmux info &>/dev/null \
     && _maint_step "tmux plugins" ~/.tmux/plugins/tpm/bin/update_plugins all
-  tmux set -g @pkgs-changed "$(date +%s%N)" 2>/dev/null      # the tmux Packages / Updates panes re-read
+  tmux set -g @pkgs-changed "$EPOCHREALTIME" 2>/dev/null      # the tmux Packages / Updates panes re-read
   if (( $#_maint_failed )); then
     echo "⚠️  Update finished with errors in: ${(j:, :)_maint_failed}"; return 1
   fi
   echo "✅ Update Completed"
 }
+
+zmodload -F zsh/datetime p:EPOCHREALTIME 2>/dev/null   # change stamps for the tmux panes (macOS date has no %N)
 
 clean() {
   local -a _maint_failed
@@ -39,7 +41,7 @@ clean() {
   # brew: dependencies nothing needs any more, old versions and the download cache
   (( $+commands[brew] )) && _maint_step "brew" eval 'brew autoremove && brew cleanup --prune=all'
   (( $+commands[docker] )) && _maint_step "docker build cache" eval 'docker builder prune -f 2>/dev/null; true'
-  tmux set -g @pkgs-changed "$(date +%s%N)" 2>/dev/null
+  tmux set -g @pkgs-changed "$EPOCHREALTIME" 2>/dev/null
   if (( $#_maint_failed )); then
     echo "⚠️  Clean up finished with errors in: ${(j:, :)_maint_failed}"; return 1
   fi
@@ -343,7 +345,8 @@ installed-packages() {
   local base=~/.apt-base.txt notes=~/.apt-notes.tsv rebuild=0 pkg only p d k s n v r
   local -a hits
   local -A note
-  [[ -r $notes ]] && while IFS=$'\t' read -r p d; do
+  # (|| [[ -n $p ]]: the last line counts too when the file does not end in a newline)
+  [[ -r $notes ]] && while IFS=$'\t' read -r p d || [[ -n $p ]]; do
     [[ -n $p ]] && note[$p]="$d"
   done < $notes
 
@@ -358,14 +361,16 @@ installed-packages() {
         [[ -n $pkg ]] || { print "Usage: installed-packages <package> --note [reason]"; return 1 }
         shift
         if (( $# )); then
-          note[$pkg]="${*//$'\t'/ }"
+          note[$pkg]="${${*//$'\t'/ }//$'\n'/ }"
           print "✅ Note saved for $pkg"
         else
           unset "note[$pkg]"
           print "✅ Note removed for $pkg"
         fi
-        for k in ${(ko)note}; do print -r -- "$k"$'\t'"${note[$k]}"; done > $notes
-        (( $+commands[tmux] )) && tmux set -g @pkgs-changed "$(date +%s%N)" 2>/dev/null   # tmux panes too
+        # a new file that takes the old one's place (through a link: its target), like the panes do
+        local target=${notes:A}
+        for k in ${(ko)note}; do print -r -- "$k"$'\t'"${note[$k]}"; done > $target.tmp$$ && mv $target.tmp$$ $target
+        (( $+commands[tmux] )) && tmux set -g @pkgs-notes "$EPOCHREALTIME" 2>/dev/null   # tmux panes too
         return 0 ;;
       -h|--help)
         print "Usage: installed-packages [package] [options]"

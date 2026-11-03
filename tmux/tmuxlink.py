@@ -11,7 +11,22 @@ import time
 
 
 def tmux(*args):
-    return subprocess.run(["tmux", *args], capture_output=True, text=True)
+    """A tmux command · a server that does not answer within 5 s counts as no answer (a stuck
+    server must not freeze every pane)."""
+    try:
+        return subprocess.run(["tmux", *args], capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL)
+    except (subprocess.TimeoutExpired, OSError):
+        return subprocess.CompletedProcess(["tmux", *args], 1, "", "tmux did not answer")
+
+
+def client():
+    """The client this program works for: in a popup, the one that opened it (@popup-client,
+    noted by the binding); elsewhere the current one."""
+    if os.environ.get("TMUX_IN_POPUP"):
+        c = get("@popup-client")
+        if c:
+            return c
+    return tmux("display", "-p", "#{client_name}").stdout.strip()
 
 
 def get(option):
@@ -53,11 +68,13 @@ def my_label():
 
 
 def pointer_here(force=False):
+    """Written only when it changes: setting any option makes tmux redraw every client."""
     global _noted
     now = time.monotonic()
     if (force or now - _noted >= 0.25) and my_label():
         _noted = now
-        put("@pointer", my_label())
+        if get("@pointer") != my_label():
+            put("@pointer", my_label())
 
 
 def pointer_is_here():
@@ -133,7 +150,14 @@ def open_url(url):
 
 
 def copy(text):
-    tmux("set-buffer", "-w", "--", text)
+    """To tmux's buffer and the clipboard (OSC 52) · through stdin: as an argument tmux refuses
+    more than ~16 KB and the system more than 128 KB · False when it did not work."""
+    try:
+        res = subprocess.run(["tmux", "load-buffer", "-w", "-"], input=text, text=True, capture_output=True,
+                             timeout=10)
+        return res.returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
 
 
 def session_for(path):
