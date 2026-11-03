@@ -36,7 +36,7 @@ RES_ROWS=8; { command -v nvidia-smi || [[ -x /usr/lib/wsl/lib/nvidia-smi ]]; } &
 # the config's own ensure take the same one): the socket's path, as tmux would make it
 sock=${TMUX%%,*}
 [[ -z $sock ]] && sock=$(tmux display -p '#{socket_path}' 2>/dev/null)
-[[ -z $sock ]] && sock=${TMUX_TMPDIR:-/tmp}/tmux-$UID/default
+[[ -z $sock ]] && sock=$(cd "${TMUX_TMPDIR:-/tmp}" 2>/dev/null && pwd -P)/tmux-$UID/default   # as tmux resolves it (/private/tmp on macOS)
 key=${sock//\//_}
 run_dir=${XDG_RUNTIME_DIR:-/tmp}; [[ -d $run_dir && -w $run_dir ]] || run_dir=/tmp
 LOCK=$run_dir/tmux-system-$UID-$key.lock
@@ -115,7 +115,12 @@ healthy() {
 # Serialise ensure / restart (hooks and new tabs may run them at the same time). The lock
 # lives in a subshell so it is released as soon as the work is done, never held by an
 # attached client; -w 5 so nothing can ever wait on it for long.
-locked() { ( flock -w 5 9 || exit 0; "$@" ) 9>"$LOCK"; }   # another build still running after 5 s: it does it
+# another build still running after 5 s: it does it · no flock at all (macOS without Homebrew's
+# on PATH): build anyway, unlocked, rather than never
+locked() {
+  command -v flock >/dev/null || { "$@"; return; }
+  ( flock -w 5 9 || exit 0; "$@" ) 9>"$LOCK"
+}
 
 ensure_now() {
   if tmux has-session -t "=$S" 2>/dev/null; then
@@ -174,7 +179,8 @@ server_up() { tmux -N start-server 2>/dev/null; }   # -N: only asks, never start
 case $1 in
   ensure|-d) server_up || exit 0; NOSTART=1; ensure ;;
   # from hooks (a pane / tab of system was closed): never queue up behind a build in progress
-  repair)    server_up || exit 0; NOSTART=1; ( flock -n 9 || exit 0; ensure_now ) 9>"$LOCK" ;;
+  repair)    server_up || exit 0; NOSTART=1
+             if command -v flock >/dev/null; then ( flock -n 9 || exit 0; ensure_now ) 9>"$LOCK"; else ensure_now; fi ;;
   restart)   server_up || exit 0; NOSTART=1; locked restart_now ;;
   go)        NOSTART=1; ensure; tmux switch-client ${2:+-c "$2"} -t "=$S" ;;
   ""|open)   if ! tmux show -gv exit-empty &>/dev/null; then tmux start-server; fi

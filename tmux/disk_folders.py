@@ -32,8 +32,9 @@ ICON = dict(dir="\U000F024B", file="\U000F0214", link="\U000F0339", up="\U000F00
             app="\U000F03D6", term="\U000F018D", measure="\U000F0450", copy="\U000F018F", delete="\U000F0A7A",
             home="\U000F02DC", disk="\U000F02CA")
 STALE = 1800           # a measure older than this (seconds) is done again when you go to the folder
-RUNS = (".exe", ".bat", ".cmd", ".com", ".lnk", ".ps1", ".vbs", ".msi", ".desktop", ".command", ".app", ".sh",
-        ".appimage", ".jar", ".scr", ".url", ".pkg")
+RUNS = (".exe", ".bat", ".cmd", ".com", ".lnk", ".ps1", ".psm1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh",
+        ".hta", ".cpl", ".msc", ".reg", ".pif", ".scf", ".msi", ".url", ".scr", ".desktop", ".command", ".app",
+        ".sh", ".appimage", ".jar", ".pkg")
 
 
 def same(a, b):
@@ -50,7 +51,8 @@ def protected(path):
     folders on macOS."""
     path = path.rstrip("/") or "/"
     home = disksrc.HOME
-    if path.count("/") <= 1 or same(path, home) or same(path, os.path.dirname(home)) or os.path.ismount(path):
+    if path.count("/") <= 1 or same(path, home) or same(path, os.path.dirname(home)) or os.path.ismount(path) \
+            or path in disksrc.mount_points():
         return True
     parent = os.path.dirname(path)
     if os.path.ismount(parent) or parent in disksrc.mount_points():
@@ -190,8 +192,8 @@ class Folders(TableApp):
         rows, total = [], 0
         done = bool(m and m.done)
         for name, full, st in found or []:
-            is_dir = stat.S_ISDIR(st.st_mode)
             is_link = stat.S_ISLNK(st.st_mode)
+            is_dir = stat.S_ISDIR(st.st_mode) or (is_link and os.path.isdir(full))   # a link to a folder opens it
             if is_dir:
                 size, _ = self.size_of(full)
                 other_disk = size is None and done and os.path.ismount(full)
@@ -360,7 +362,10 @@ class Folders(TableApp):
     def open_app(self, r, sure=False):
         """Open with the desktop's app · a program (.exe, .desktop, .sh, executable…) asks first:
         the system would run it."""
-        runs = not r["dir"] and (r["path"].lower().endswith(RUNS) or os.access(r["path"], os.X_OK))
+        # by its name, and by the executable bit except on a Windows drive (drvfs marks every file so)
+        windows_drive = disksrc.WSL and r["path"].startswith("/mnt/") and len(r["path"].split("/")) > 2 \
+            and len(r["path"].split("/")[2]) == 1
+        runs = not r["dir"] and (r["path"].lower().endswith(RUNS) or (os.access(r["path"], os.X_OK) and not windows_drive))
         if runs and not sure:
             self.confirm(f"{r['name']} is a program: run it with the system's app?", lambda: self.open_app(r, True), r)
             return

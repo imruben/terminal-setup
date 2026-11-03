@@ -51,10 +51,13 @@ class Packages(SourcesPane, TableApp):
     def fetch(self):
         notes, rows, self.error = read_notes(), [], ""
         for s in pkgsrc.sources():
-            if s.name == "brew":                    # ~0.5 s and more with many formulae: in the background
-                found = self.bg.get(("brew", "mine"), s.mine, 60) or []
+            if s.name in ("brew", "snap"):          # slow (brew) or may not answer (snapd starting): in the background
+                found = self.bg.get((s.name, "mine"), s.mine, 60) or []
             else:
-                found = s.mine()
+                try:
+                    found = s.mine()
+                except OSError:                     # one source failing never empties the others
+                    found = []
                 self.error = self.error or s.error
             for p in found:
                 rows.append({**p, "id": f"{s.name}:{p['name']}", "src": s.name,
@@ -63,7 +66,7 @@ class Packages(SourcesPane, TableApp):
 
     def summary(self):
         apt = pkgsrc.source("apt")
-        base = f"{YELLOW}no base list: every manual apt package shows{RESET}" if apt and apt.error else ""
+        base = f"{YELLOW}no base list: all manual apt shown{RESET}" if apt and apt.error else ""
         return " · ".join(t for t in (base, self.loading_note()) if t)
 
     def row_colour(self, r):
@@ -121,8 +124,7 @@ class Packages(SourcesPane, TableApp):
                      lambda: pkg_popup(self, f"uninstall · {r['name']} · {r['src']}", s.remove(r["name"])), r)
 
     def copy(self, text):
-        tmuxlink.copy(text)
-        self.flash(f"copied: {text}")
+        self.flash(f"copied: {text}" if tmuxlink.copy(text) else "could not copy", ok=True)
 
 
 if __name__ == "__main__":

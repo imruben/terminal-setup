@@ -138,7 +138,7 @@ class Repo(BackgroundViewer):
             if len(entry) < 4:
                 continue
             xy, path = entry[:2], clean(entry[3:])
-            if xy[0] in "RC" and i < len(fields):          # a rename: the old path is the next field
+            if ("R" in xy or "C" in xy) and i < len(fields):    # a rename: the old path is the next field
                 path = f"{clean(fields[i])} → {path}"
                 i += 1
             if xy == "??":
@@ -166,7 +166,8 @@ class Repo(BackgroundViewer):
     def diff(self, repo, width):
         """What is not committed yet (staged and not), against HEAD. diff-index, not `diff HEAD`:
         it never rewrites the index, so it never gets in the way of your own git add / commit."""
-        base = "HEAD" if head_exists(repo) else EMPTY_TREE
+        # no commits yet: compare with an empty tree (its id depends on the hash: SHA-1 or SHA-256)
+        base = "HEAD" if head_exists(repo) else (git_out(repo, "hash-object", "-t", "tree", "/dev/null").strip() or EMPTY_TREE)
         stat = git_out(repo, "diff-index", "--color=always", f"--stat={max(40, width - 4)}", base).rstrip("\n")
         if not stat:
             untracked = sum(1 for l in git_out(repo, "status", "--porcelain=v1").splitlines() if l.startswith("??"))

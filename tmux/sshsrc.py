@@ -287,14 +287,18 @@ def parse_ssh(cmd):
         return None
     opts, flags, fwd = {}, set(), []
     if prog == "ssh":
-        i = 1
+        i, dest_at = 1, None
         while i < len(w):
             word = w[i]
             if word == "--":
                 i += 1
                 break
             if not (word.startswith("-") and len(word) > 1):
-                break
+                if dest_at is None:
+                    dest_at = i                  # the host · options may still follow it
+                    i += 1
+                    continue
+                break                            # the remote command starts here
             j = 1
             while j < len(word):                 # -fNL 8080:… : f and N are flags, L takes the rest
                 ch = word[j]
@@ -311,9 +315,11 @@ def parse_ssh(cmd):
                 flags.add(ch)
                 j += 1
             i += 1
-        if i >= len(w):
-            return None
-        dest, rest = w[i], w[i + 1:]
+        if dest_at is None:
+            if i >= len(w):
+                return None
+            dest_at, i = i, i + 1
+        dest, rest = w[dest_at], w[i:]
         if dest.startswith("ssh://"):
             m = re.match(r"ssh://(?:([^@/]+)@)?(\[[^\]]+\]|[^:/]+)(?::(\d+))?", dest)
             if not m:
@@ -387,7 +393,7 @@ def history():
                 data = f.read()
         except OSError:
             continue
-        text = unmetafy(data).decode("utf-8", "replace")
+        text = (unmetafy(data) if path.endswith("zsh_history") else data).decode("utf-8", "replace")
         when = None
         for line in text.splitlines():
             m = re.match(r"^: (\d+):\d+;(.*)$", line)          # zsh: ": 1730000000:0;cmd"
@@ -429,8 +435,10 @@ def live():
         hit = parse_ssh(args)
         if not hit or hit["prog"] != "ssh":
             continue
-        if hit["flags"] & {"G", "O", "Q", "V"} or any(g in " ".join(hit["rest"]) for g in GIT_SSH):
-            continue
+        if hit["flags"] & {"G", "Q", "V"} or "O" in hit["opts"] or any(g in " ".join(hit["rest"]) for g in GIT_SSH):
+            continue                             # ssh -G / -O check…: questions, not connections
+        if "W" in hit["opts"]:
+            continue                             # the ssh -W behind a ProxyJump: part of another session
         batch = any(o.lower().replace(" ", "") == "batchmode=yes" for o in hit["opts"].get("o", []))
         if batch and "N" not in hit["flags"]:
             continue                             # a login test or an account check (ssh_hosts.py)

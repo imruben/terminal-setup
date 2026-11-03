@@ -36,7 +36,8 @@ def cw(ch):
     and zero-width joiners / selectors, 1 for the rest (Nerd Font icons included)."""
     if ch < "\u0300":
         return 1
-    if unicodedata.combining(ch) or ch in "\u200b\u200c\u200d\ufe0e\ufe0f":
+    if unicodedata.combining(ch) or ch in "\u200b\u200c\u200d\ufe0e\ufe0f" \
+            or unicodedata.category(ch) in ("Me", "Mn"):          # (keycaps: 1️⃣ is two cells, not three)
         return 0
     return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
 
@@ -54,7 +55,10 @@ def vlen(s):
     return n
 
 
-KEEP_CODE = re.compile(r"\x1b\[[0-9;]*m|\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)")    # colours, links
+# kept: colours, links, and the two moves the panes draw with on one row (to column N, clear to
+# its end): none of them can move to another row
+KEEP_CODE = re.compile(r"\x1b\[[0-9;]*m|\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[\d*G|\x1b\[K")
+COLUMN = re.compile(r"\x1b\[(\d*)G")
 
 
 def cut(s, n):
@@ -65,6 +69,13 @@ def cut(s, n):
         m = ANSI.match(s, i)
         if m:
             if KEEP_CODE.fullmatch(m.group()):
+                col = COLUMN.fullmatch(m.group())
+                if col:                           # to column N: what follows starts there
+                    vis = max(vis, int(col[1] or 1) - 1)
+                    if vis >= n:
+                        full = True
+                        i = m.end()
+                        continue
                 out.append(m.group())             # other sequences (cursor moves…) are dropped
             i = m.end()
             continue
@@ -108,7 +119,7 @@ def wrap(line, width, indent="  "):
             cur.append(m.group())
             i = m.end()
             continue
-        w = cw(line[i])
+        w = 1 if line[i] == "\ufe0f" and i and cw(line[i - 1]) == 1 else cw(line[i])   # ❤️: as vlen counts it
         if vis + w > width and vis > start:
             cut_at, seen = None, 0
             for k, tok in enumerate(cur):            # last space past the middle of the piece
@@ -368,6 +379,11 @@ class Screen:
                 t = cut_off(data)
             if t is not None and data[t:] != b"\x1b":
                 data, self.carry = data[:t], data[t:]
+            # a paste that has not ended yet (big pastes come in several reads): wait for its end,
+            # else the rest would be read as keys (Enter, letters that pick menu items, y…)
+            start = data.rfind(b"\x1b[200~")
+            if start >= 0 and data.find(b"\x1b[201~", start) < 0 and len(data) - start < 1 << 20:
+                self.carry, data = data[start:] + self.carry, data[:start]
             yield from parse(data)
 
 

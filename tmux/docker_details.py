@@ -65,8 +65,8 @@ INLINE = [re.compile(r"(\b(?:mysql|mysqladmin|mysqldump|mariadb)\b[^;|&]*?\s-p)(
           re.compile(r"(\b(?:mongo|mongosh|mongodump|mongorestore)\b[^;|&]*?\s(?:-p|--password)[ =])(\S+)"),
           re.compile(r"(--(?:requirepass|masterauth|password|pass|token|secret)[ =])(\S+)", re.I),
           re.compile(r"(\bcurl\b[^;|&]*?\s(?:-u|--user)\s+[^:\s]+:)(\S+)"),
-          re.compile(r"(\s-a\s+)(\S+)(?=[^;|&]*\bredis)"),
-          re.compile(r"(\b[\w.]*(?:password|passwd|secret|token)[\w.]*=)([^\s&;'\"]+)", re.I)]
+          re.compile(r"(\b[\w.]*(?:password|passwd|pwd|secret|token|api_?key|apikey|auth|credential|private_?key)"
+                     r"[\w.]*=)([^\s&;'\",\]]+)", re.I)]
 
 
 def hide_inline(text):
@@ -102,10 +102,12 @@ def hide_args(args):
             out.append(hide_inline(a))                   # sh -c "redis-server --requirepass x"…
         hide_next = (a.startswith("-") and "=" not in a and bool(SECRET_KEY.search(a))) or (redis and a == "-a")
     # a client and its password in separate arguments (mysqladmin ping -psecret · curl -u a:b):
-    # the whole line, seen at once, says which is which
+    # the whole line, seen at once, says which is which · the list keeps its shape
+    if any(" " in a for a in out):
+        return [hide_inline(a) for a in out]
     joined = " ".join(out)
-    masked = hide_inline(joined)
-    return masked.split(" ") if masked != joined else out
+    masked = hide_inline(joined).split(" ")
+    return masked if len(masked) == len(out) else out
 
 
 def to_yaml(obj, indent=0, key=""):
@@ -156,20 +158,36 @@ def show_text(text, language, width):
 SECRET_LINE = re.compile(r"^(\s*(?:-\s*)?(?:(?:ENV|ARG)\s+)?[\"']?([\w.\-]+)[\"']?\s*[:=]\s*)(\S.*?)\s*$")
 
 
+PAIR = re.compile(r"(\b([\w.\-]+)=)(\"[^\"]*\"|'[^']*'|[^\s,\]\"']+)")
+
+
 def mask_secrets(text):
     """A file as text with the values of secret-looking keys hidden: PASSWORD: x, - TOKEN=x,
-    ENV API_KEY=x, ARG SECRET x… (${VARS} stay: they are not secrets themselves)."""
-    out = []
+    ENV A=1 API_KEY=x, ARG SECRET x, ["API_KEY=x"], and the lines of a block (KEY: | …)
+    (${VARS} stay: they are not secrets themselves)."""
+    out, block = [], None          # block: indent of a secret key whose value is the lines below
     for line in text.splitlines():
+        indent = len(line) - len(line.lstrip())
+        if block is not None:
+            if line.strip() and indent <= block:
+                block = None
+            else:
+                out.append((" " * indent + "•••• (hidden)") if line.strip() else line)
+                continue
         m = SECRET_LINE.match(line)
-        if m and SECRET_KEY.search(m[2]) and not m[3].startswith("${") and m[3] not in ("|", ">", "''", '""'):
+        if m and SECRET_KEY.search(m[2]) and re.fullmatch(r"[|>][-+0-9]*", m[3]):
+            out.append(m[1] + m[3])                       # PRIVATE_KEY: | → the next lines are the key
+            block = indent
+            continue
+        if m and SECRET_KEY.search(m[2]) and not m[3].startswith("${") and m[3] not in ("''", '""'):
             line = m[1] + "•••• (hidden)"
         else:
             env = re.match(r"^(\s*(?:ENV|ARG)\s+)([\w.\-]+)(\s+)(\S.*)$", line)    # ENV KEY value
-            if env and SECRET_KEY.search(env[2]):
+            if env and SECRET_KEY.search(env[2]) and "=" not in env[2]:
                 line = env[1] + env[2] + env[3] + "•••• (hidden)"
-            else:
-                line = hide_inline(line)
+            else:                                         # KEY=value pairs anywhere on the line
+                line = PAIR.sub(lambda p: p[1] + "••••" if SECRET_KEY.search(p[2]) and not p[3].startswith("${")
+                                else p[0], hide_inline(line))
         out.append(line)
     return "\n".join(out)
 

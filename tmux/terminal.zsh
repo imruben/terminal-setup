@@ -291,8 +291,8 @@ wait_for_restore() {
   for i in {1..40}; do
     [[ $(tmux show -gqv @restored 2>/dev/null) == 1 ]] && break
     count=$(session_names | grep -cvx system)
-    if (( count > 0 && count == last )); then
-      (( ++stable >= 5 )) && break
+    if (( count == last )); then              # nothing new for 1 s (or 2 s with nothing at all): done
+      (( ++stable >= (count > 0 ? 5 : 10) )) && break
     else
       stable=0
     fi
@@ -393,6 +393,14 @@ case "$1" in
   files|f)          exec bash $TERMINAL_SETUP/install/files.sh ;;
   system|sys)       exec $TERMINAL_SETUP/tmux/system.sh ${2:-open} ;;
   start)            start_cmd "$2" "$3" ;;
+  # Ctrl+a $ renamed a session: its description and the start session follow (the old name in @rename-from)
+  _renamed)         local old=$(tmux show -gqv @rename-from) new=$(tmux display -p '#S')
+                    tmux set -gu @rename-from
+                    [[ -n $old && -n $new && $old != $new ]] || exit 0
+                    start_renamed "$old" "$new"
+                    f=~/.tmux/descriptions.tsv
+                    [[ -f $f ]] && awk -F'\t' -v o="$old" -v n="$new" 'BEGIN { OFS = FS } $1 == o { $1 = n } { print }' "$f" > "$f.tmp" \
+                      && mv "$f.tmp" "$f" ;;
   help|h|-h|--help) help ;;
   _preview)         preview "$2" "$3" ;;
   _names)           session_names ;;                 # for zsh completion

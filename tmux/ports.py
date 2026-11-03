@@ -75,11 +75,17 @@ def start_of(pid):
 
 
 def state_of(pid):
+    """R, S, T (stopped)… · macOS (no /proc): what ps says."""
     try:
         with open(f"/proc/{pid}/stat", "rb") as f:
             stat = f.read().decode("utf-8", "replace")
         return stat[stat.rindex(")") + 2:].split()[0]
     except (OSError, ValueError, IndexError):
+        pass
+    try:
+        return subprocess.run(["ps", "-o", "state=", "-p", str(pid)], capture_output=True, text=True,
+                              timeout=3).stdout.strip()[:1]
+    except (subprocess.TimeoutExpired, OSError):
         return ""
 PROC = re.compile(r'\("([^"]+)",pid=(\d+)')
 

@@ -28,6 +28,7 @@ import ctypes
 import datetime
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -131,6 +132,8 @@ class Logs(Viewer):
         self.full_proc = None                            # the whole-log read, killed when it is not wanted
         self.new_lines = 0                               # lines that arrived while paused (not shown yet)
         atexit.register(self.stop_all)                   # macOS has no PR_SET_PDEATHSIG: end the children
+        for sig in ("SIGTERM", "SIGHUP"):                # killed or the pane closed: atexit runs too
+            signal.signal(getattr(signal, sig), lambda *_: sys.exit(0))
         super().__init__(screen)
 
     def stop_all(self):
@@ -142,10 +145,14 @@ class Logs(Viewer):
                     pass
 
     def state(self, name):
-        """(running, started at, logging driver) · (False, None, '') when docker does not answer."""
+        """(running, started at, logging driver) · (False, None, '') when docker does not answer.
+        The driver is 'none' only when docker logs really cannot read it (the none driver, or
+        another one with dual logging's cache turned off): since Engine 20.10 it reads them all."""
         try:
             out = subprocess.run(["docker", "container", "inspect", "-f",
-                                  "{{.State.Running}}|{{.State.StartedAt}}|{{.HostConfig.LogConfig.Type}}", name],
+                                  "{{.State.Running}}|{{.State.StartedAt}}|{{if eq .HostConfig.LogConfig.Type \"none\"}}none"
+                                  "{{else if eq (index .HostConfig.LogConfig.Config \"cache-disabled\") \"true\"}}none"
+                                  "{{else}}{{.HostConfig.LogConfig.Type}}{{end}}", name],
                                  capture_output=True, text=True, timeout=3, stdin=subprocess.DEVNULL).stdout.strip()
         except (subprocess.TimeoutExpired, OSError):
             out = ""
@@ -162,8 +169,8 @@ class Logs(Viewer):
         stamp = m[1] if m else None
         line = clean(raw[m.end():] if m else raw).expandtabs(4)        # tabs: Go's zap logs
         plain = ANSI.sub("", line)
-        if len(line) > LINE_MAX:                                       # a 1 MB line: shown cut, copied whole
-            line = line[:LINE_MAX] + f"{RESET}{DIM} … ({len(plain) - LINE_MAX:,} more characters){RESET}"
+        if len(plain) > LINE_MAX:                                      # a 1 MB line: shown cut, copied whole
+            line = plain[:LINE_MAX] + f"{RESET}{DIM} … ({len(plain) - LINE_MAX:,} more characters){RESET}"
         lvl, pretty = parse(line, stamp)
         return (lvl, pretty, plain.lower(), plain, stamp)
 
@@ -177,16 +184,26 @@ class Logs(Viewer):
             self.full, self.loading = None, False
             self.counts = collections.Counter()
             self.last_stamp, self.asleep, self.hidden_at = None, False, None
-        self.no_logs, self.new_lines = "", 0
+        self.no_logs, self.new_lines, self.started_at = "", 0, None
         if not name:
-            return
-        running, self.started_at, driver = self.state(name)
-        if driver in ("none", "syslog", "gelf", "fluentd", "awslogs", "splunk", "etwlogs", "gcplogs", "logentries"):
-            self.no_logs = driver                       # docker logs cannot read these drivers: nothing to follow
             return
         self.follow_from(["--tail", str(TAIL)])
         if self.filtering():
             self.load_full()
+        gen = self.gen
+
+        def check():                                   # in a thread: a slow daemon must not freeze the pane
+            running, started, driver = self.state(name)
+            with self.lock:
+                if gen != self.gen:
+                    return
+                self.started_at = started
+                if driver == "none":                   # nothing docker logs can read: stop following
+                    self.no_logs = "none (no logs kept)"
+            if self.no_logs:
+                self.stop_follow()
+            self.wake()
+        threading.Thread(target=check, daemon=True).start()
 
     def follow_from(self, where):
         self.proc = subprocess.Popen(["docker", "logs", "-f", "--timestamps", *where, self.key],
@@ -224,18 +241,30 @@ class Logs(Viewer):
             # `docker logs -f` ended: go on only once the container really started again (a new
             # StartedAt), else a follow that ends at once would restart forever
             self.checked_at = now
-            running, started, _ = self.state(self.key)
-            if running and started and started != self.started_at:
-                self.started_at = started
-                with self.lock:
-                    self.tail.append((None, STARTED, "", "", None))
-                    self.dirty = True
-                self.follow_on()
+            gen, name = self.gen, self.key
+
+            def check():                                # in a thread, like start()'s
+                running, started, _ = self.state(name)
+                if running and started and started != self.started_at and gen == self.gen:
+                    self.started_at = started
+                    with self.lock:
+                        self.tail.append((None, STARTED, "", "", None))
+                        self.dirty = True
+                    self.restart_wanted = True
+                    self.wake()
+            threading.Thread(target=check, daemon=True).start()
+        if getattr(self, "restart_wanted", False):
+            self.restart_wanted = False
+            self.follow_on()
 
     def follow(self, proc, gen, after):
         after = stamp_key(after) if after else None
         for raw in iter(proc.stdout.readline, b""):
-            e = self.entry(raw.decode("utf-8", "replace").rstrip("\n"))
+            try:
+                e = self.entry(raw.decode("utf-8", "replace").rstrip("\n"))
+            except Exception:                            # a line no format understands: shown as it is
+                text = raw.decode("utf-8", "replace").rstrip("\n")
+                e = (None, clean(text), text.lower(), text, None)
             if after:
                 if e[4] and stamp_key(e[4]) <= after:
                     continue                             # already shown before the pause
@@ -277,16 +306,27 @@ class Logs(Viewer):
                     self.loading = False
                 return
             with self.lock:
-                if self.full_proc and self.full_proc.poll() is None:
-                    self.full_proc.kill()
+                if gen != self.gen or gen_full != self.gen_full:     # already not wanted: stop it
+                    proc.kill()
+                    proc.wait()
+                    return
+                old = self.full_proc
                 self.full_proc = proc
+            if old is not None and old.poll() is None and old is not proc:
+                old.kill()                                # an older read (another container)
             data, _ = proc.communicate()
             if gen != self.gen or gen_full != self.gen_full:
                 return
             lines = data.decode("utf-8", "replace").splitlines()
             self.cut_off = len(lines) >= FULL_MAX
+
+            def safe(l):
+                try:
+                    return self.entry(l)
+                except Exception:
+                    return (None, clean(l), l.lower(), l, None)
             # stdout and stderr come one after the other: docker's stamps put them back in order
-            entries = sorted((self.entry(l) for l in lines), key=lambda e: stamp_key(e[4]) if e[4] else "")
+            entries = sorted((safe(l) for l in lines), key=lambda e: stamp_key(e[4]) if e[4] else "")
             with self.lock:
                 if gen == self.gen and gen_full == self.gen_full:
                     # lines arriving live from now on are added if newer than the read
@@ -329,7 +369,7 @@ class Logs(Viewer):
                 self.rebuild()
 
     def wake(self):
-        os.kill(os.getpid(), __import__("signal").SIGWINCH)
+        os.kill(os.getpid(), signal.SIGWINCH)
 
     # ─── what to show ───
     def filtering(self):
@@ -388,7 +428,7 @@ class Logs(Viewer):
         self.tab = n % len(BASE_TABS)
         if self.filtering():
             self.load_full()
-        self.top, self.following = 0, True
+        self.top, self.following, self.new_lines = 0, True, 0
         self.rebuild()
 
     def draw(self):
@@ -436,7 +476,7 @@ class Logs(Viewer):
             return
         self.query += text
         self.load_full()
-        self.top, self.following, self.pending = 0, True, True
+        self.top, self.following, self.pending, self.new_lines = 0, True, True, 0
 
     def on_key(self, name):
         if self.prompt:
@@ -459,7 +499,7 @@ class Logs(Viewer):
                 self.switch(0)                       # Esc with no search: back to All
                 return
             self.query = "" if name != "backspace" else self.query[:-1]
-            self.top, self.following, self.pending = 0, True, True
+            self.top, self.following, self.pending, self.new_lines = 0, True, True, 0
             return
         super().on_key(name)
         if name == "end":                            # following again: what arrived meanwhile
@@ -520,7 +560,8 @@ class SavingLogs(Logs):
             lines = [e[3] for e in self.entries if e[3]]
             try:
                 with open(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
-                    f.write("\n".join(lines) + "\n")       # 600: logs can hold secrets
+                    os.fchmod(f.fileno(), 0o600)              # 600: logs can hold secrets (an old 644 file too)
+                    f.write("\n".join(lines) + "\n")
                 self.flash(f"{ICON_SAVE} saved {len(lines)} lines to {short}")
             except OSError as e:
                 self.flash(f"cannot write {short}: {e.strerror}")
@@ -531,6 +572,7 @@ class SavingLogs(Logs):
         def work():
             try:
                 with open(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as f:
+                    os.fchmod(f.fileno(), 0o600)
                     res = subprocess.run(["docker", "logs", *since, name], stdout=f, stderr=subprocess.STDOUT,
                                          stdin=subprocess.DEVNULL)
                 with open(target, "rb") as f:

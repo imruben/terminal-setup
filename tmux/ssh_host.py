@@ -73,12 +73,9 @@ class Host(BackgroundViewer):
             lines.append(k("Service") + f"{TEXT}{service}{DIM} · git over ssh, no shell: Hosts → right-click asks which account your key is")
         held, problem = sshsrc.agent_keys()
         by_path = {key["path"]: key for key in sshsrc.keys()}
-        listed = [os.path.expanduser(p) for p in c.get("identityfile", [])]
         shown = 0
-        for p in listed:
+        for p in sshsrc.key_files(c):              # %h %r… expanded, only the ones that exist
             key = by_path.get(p)
-            if not os.path.exists(p):
-                continue                       # ssh's default names that do not exist: not worth a line
             if key:
                 state = (f"{GREEN}in the agent" if key["fingerprint"] in held else
                          f"{YELLOW}passphrase, not in the agent" if key["encrypted"] else f"{DIM}no passphrase")

@@ -462,7 +462,7 @@ _installed-packages() {
   local p d s v
   local -a items opts
   local -A note
-  [[ -r ~/.apt-notes.tsv ]] && while IFS=$'\t' read -r p d; do
+  [[ -r ~/.apt-notes.tsv ]] && while IFS=$'\t' read -r p d || [[ -n $p ]]; do
     note[$p]="$d"
   done < ~/.apt-notes.tsv
 

@@ -196,6 +196,9 @@ class Procs(TableApp):
             self.flash(f"{r['name']} is not stopped from here: {self.why_protected.get(r['pid'], 'protected')}", ok=False)
 
     def ask_kill(self, r, sig):
+        if r.get("state") == "Z":                # a zombie has already ended: only its parent can clear it
+            self.flash(f"{r['name']} is a zombie: it already ended · its parent ({r['ppid']}) has to reap it", ok=False)
+            return
         if sig == signal.SIGKILL:
             q = f"Force kill {r['name']} ({r['pid']})? it cannot clean up, unsaved work is lost"
         else:

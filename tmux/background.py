@@ -44,8 +44,8 @@ class Background:
             with self.lock:
                 fresh = self.gen.get(key, 0) == gen
                 old = self.data.get(key)
-                if failed and old is not None:   # keep what was known, ask again soon
-                    self.data[key] = (old[0], time.monotonic() - self.ttl.get(key, RETRY) + RETRY)
+                if failed and old is not None:   # keep what was known, ask again soon (at once if forgotten)
+                    self.data[key] = (old[0], time.monotonic() - self.ttl.get(key, RETRY) + RETRY if fresh else STALE)
                 else:
                     self.data[key] = (result, (time.monotonic() - (self.ttl.get(key, RETRY) - RETRY if failed else 0))
                                       if fresh else STALE)

@@ -70,7 +70,9 @@ class Cleanup(TableApp):
 
     @staticmethod
     def cleanable(r):
-        return r["can"] if r["can"] is not None and not r["size"] else (r["size"] or 0) >= EMPTY
+        """Docker says itself whether something is unused (a stopped container can be 8K); for
+        the rest, more than an empty folder's few K."""
+        return bool(r["can"]) if r["can"] is not None else (r["size"] or 0) >= EMPTY
 
     def on_tick(self):
         stamp = self.opts.get("@disk-changed")

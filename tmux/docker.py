@@ -17,6 +17,7 @@ import os
 import platform
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -154,18 +155,26 @@ class Containers(TableApp):
         """docker ps + inspect, in a thread (a slow or hung daemon must not freeze the pane) ·
         None when docker does not answer, with the reason in self.error."""
         global HOST_ARCH
-        res = docker("ps", "-a", "--format", "{{json .}}", timeout=8)
+        # the fields one by one: {{json .}} makes docker work out every container's size each time
+        fmt = ('{"ID":{{json .ID}},"Image":{{json .Image}},"Names":{{json .Names}},"State":{{json .State}},'
+               '"Status":{{json .Status}},"Ports":{{json .Ports}},"Networks":{{json .Networks}}}')
+        res = docker("ps", "-a", "--format", fmt, timeout=8)
         if res is None or res.returncode:
             if res and "permission denied" in res.stderr.lower():
                 self.error = "no access to Docker: sudo usermod -aG docker $USER, then open a new login session"
+            elif res and "not installed" not in res.stderr and shutil.which("docker"):
+                self.error = "Docker is not answering (starting? stopped?): the last list stays meanwhile"
+                if getattr(self, "had_rows", False):
+                    raise OSError(self.error)          # keep the last rows, ask again in 15 s
             else:
                 self.error = "Docker is not running (or not installed): start Docker Desktop / the docker service"
-            return {"found": [], "info": {}}
+            return {"found": [], "info": {}, "arch": {}}
         self.error = ""
         if not getattr(self, "server_arch", None):          # the daemon's machine, not this client's
             v = docker("version", "-f", "{{.Server.Arch}}", timeout=5)
-            self.server_arch = ARCH.get(v.stdout.strip(), v.stdout.strip()) if v and v.returncode == 0 else HOST_ARCH
-            HOST_ARCH = self.server_arch or HOST_ARCH
+            if v and v.returncode == 0 and v.stdout.strip():  # (no answer: asked again next time)
+                self.server_arch = ARCH.get(v.stdout.strip(), v.stdout.strip())
+                HOST_ARCH = self.server_arch
         found = []
         for line in res.stdout.splitlines():
             try:
@@ -185,6 +194,16 @@ class Containers(TableApp):
                 except ValueError:
                     labels = {}
                 info[cid[:12]] = (name.lstrip("/"), int(rc) if rc.isdigit() else 0, labels)
+        # the architecture of each image, here in the thread (old daemons have no Platform field)
+        arch = {}
+        images = sorted({c["Image"] for c in found} - set(self.arch_cache))
+        if images:
+            ins = docker("image", "inspect", "--format", "{{.Architecture}}", *images, timeout=8)
+            got = (ins.stdout.split() if ins else [])
+            if len(got) == len(images):
+                arch = dict(zip(images, got))
+        self.arch_cache.update(arch)
+        self.had_rows = bool(found)
         return {"found": found, "info": info}
 
     def image_arch(self, c):
@@ -192,11 +211,7 @@ class Containers(TableApp):
         plat = c.get("Platform")
         if isinstance(plat, dict) and plat.get("architecture"):
             return plat["architecture"]
-        image = c["Image"]
-        if image not in self.arch_cache:
-            res = docker("image", "inspect", "--format", "{{.Architecture}}", image)
-            self.arch_cache[image] = res.stdout.strip() if res and res.returncode == 0 else "?"
-        return self.arch_cache[image]
+        return self.arch_cache.get(c["Image"], "?")        # read in the thread (read())
 
     def fetch(self):
         got = self.bg.get(("reading",), self.read, 2.5)
@@ -271,15 +286,18 @@ class Containers(TableApp):
     def on_tick(self):
         self.stats.wanted.set()                  # in sight: docker stats runs (see Stats)
         want = self.opts.get("@docker-focus")    # "show this container" from the Ports pane
+        if want and want != getattr(self, "focus_since", (None,))[0]:
+            self.focus_since = (want, time.monotonic())
         if want:
-            tmuxlink.put("@docker-focus", None)
             self.query = ""
             self.reload()
-            for r in self.rows:
-                if r["name"] == want:
-                    self.cur_id = self.sel_id = r["id"]
-                    self._moved = True               # the detail panes follow it
-                    self.ensure_visible()
+            hit = next((r for r in self.rows if r["name"] == want), None)
+            if hit or time.monotonic() - self.focus_since[1] > 10:    # found, or not coming
+                tmuxlink.put("@docker-focus", None)
+            if hit:
+                self.cur_id = self.sel_id = hit["id"]
+                self._moved = True               # the detail panes follow it
+                self.ensure_visible()
 
     def dispatch(self, ev):
         super().dispatch(ev)
@@ -394,7 +412,7 @@ class Containers(TableApp):
         self.flash(f"session {name} in {r['workdir']}")
 
     def browse(self, port):
-        url = f"http://localhost:{port}"
+        url = f"{'https' if port in (443, 8443) else 'http'}://localhost:{port}"
         if tmuxlink.open_url(url):
             self.flash(f"opening {url} in the browser")
         else:

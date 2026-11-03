@@ -154,7 +154,9 @@ class Search(SourcesPane, TableApp):
             self.ask_remove(r)
 
     def copy(self, text):
-        tmuxlink.copy(text)
+        if not tmuxlink.copy(text):
+            self.flash("could not copy", ok=False)
+            return
         self.flash(f"copied: {text}")
 
 

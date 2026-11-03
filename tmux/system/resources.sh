@@ -217,9 +217,10 @@ while :; do
   used_of $(( (mt - ma) * 1024 )) $(( mt * 1024 )); line "RAM" $(( (mt - ma) * 100 / mt )) "$REPLY"
   if (( st > 0 )); then used_of $(( (st - sf) * 1024 )) $(( st * 1024 )); line "Swap" $(( (st - sf) * 100 / st )) "$REPLY"; fi
   if [[ -n $NVSMI ]] && IFS=', ' read -r gu gm gt gtemp gpow < <("$NVSMI" --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits 2>/dev/null | head -1) && [[ $gu =~ ^[0-9]+$ && $gm =~ ^[0-9]+$ && $gt =~ ^[0-9]+$ ]]; then     # [N/A] (no memory data): no GPU line
+    [[ $gtemp =~ ^[0-9.]+$ ]] || gtemp=""; [[ $gpow =~ ^[0-9.]+$ ]] || gpow=""
     used_of $(( gm * 1048576 )) $(( gt * 1048576 )); gpu_txt=$REPLY
-    (( cols >= 50 )) && gpu_txt+=" · ${gtemp%.*}°C"
-    (( cols >= 60 )) && gpu_txt+=" · ${gpow%.*}W"
+    (( cols >= 50 )) && [[ -n $gtemp ]] && gpu_txt+=" · ${gtemp%.*}°C"
+    (( cols >= 60 )) && [[ -n $gpow ]] && gpu_txt+=" · ${gpow%.*}W"
     line "GPU" "$gu" "$gpu_txt"
   fi
   while read -r size used mnt; do

@@ -214,8 +214,10 @@ class TableApp:
             self.sel_id = self.cur_id
 
     def query_changed(self):
-        """The filter text changed (typed, cleared, or sent by another pane)."""
+        """The filter text changed (typed, cleared, or sent by another pane): the row it lands
+        on is yours, the panes that follow this one follow it."""
         self.jump, self.top, self.msg = True, 0, ""
+        self._moved = True
 
     def cur_index(self):
         for i, r in enumerate(self.rows):
@@ -504,8 +506,8 @@ class TableApp:
 
     def dispatch(self, ev):
         kind = ev[0]
-        if kind in ("mouse", "key", "char"):
-            self._moved = True                       # what happens now is yours
+        if kind in ("key", "char") or (kind == "mouse" and not ev[1] & 32 and ev[1] not in (64, 65)):
+            self._moved = True                       # a key or a click: what happens now is yours
         if kind in ("tick", "wake"):
             self.zoomed, self.visible, self.opts = tmuxlink.pane_view(*self.watch)
             if not self.visible:                         # out of sight: no work at all
@@ -547,6 +549,7 @@ class TableApp:
                 self.catch_up()
             elif kind == "mouse" and ev[1] in (0, 2) and not ev[4]:
                 self.prompt = None                  # clicking away cancels
+                self.catch_up()
             return
         if self.ask:
             if kind == "char" and ev[1].lower() in "yn":

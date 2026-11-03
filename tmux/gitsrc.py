@@ -33,7 +33,8 @@ SKIP = {"node_modules", "vendor", "venv", "__pycache__", "site-packages", "targe
 GIT_ENV = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0",
            "GIT_PAGER": "cat", "PAGER": "cat", "SSH_ASKPASS_REQUIRE": "never", "GCM_INTERACTIVE": "never",
            "GIT_NO_LAZY_FETCH": "1"}
-# the macOS folders that ask for permission when read: not looked into when searching all of home
+MACOS = os.uname().sysname == "Darwin"
+# the macOS folders that ask for permission when read: never looked into when walking home
 PRIVATE = {"Documents", "Desktop", "Downloads", "Pictures", "Movies", "Music"}
 
 
@@ -151,7 +152,7 @@ def find_repos(roots, saved=True):
             return
         seen.add("dir:" + r)
         try:
-            entries = list(os.scandir(path))
+            entries = sorted(os.scandir(path), key=lambda e: e.is_symlink())    # real folders first
         except OSError:
             return
         for e in entries:
@@ -165,9 +166,13 @@ def find_repos(roots, saved=True):
             if os.path.exists(os.path.join(e.path, ".git")):    # a repo, whatever its name
                 add(e.path, root)
             elif not (e.name in SKIP or e.name.startswith(".")
-                      or (not saved and path == HOME and e.name in PRIVATE)):
+                      or (MACOS and path == HOME and e.name in PRIVATE)):
+                if e.is_symlink() and any(real(e.path) == r or real(e.path).startswith(r + "/")
+                                          for r in other_roots if r != root):
+                    continue                     # a link into another root: that root lists those repos
                 walk(e.path, depth - 1, root)
 
+    other_roots = [real(r) for r, _ in roots]
     for root, depth in roots:
         if os.path.isdir(root):
             walk(root, depth, root)
@@ -266,8 +271,8 @@ def status(repo):
         st["branch"] = ""
         st["detached"] = st["oid"][:8]
     # an upstream git names but that is not there any more (merged and deleted on the remote)
-    st["gone"] = bool(st["upstream"]) and not has_ab
     st["initial"] = st["oid"] == "(initial)"
+    st["gone"] = bool(st["upstream"]) and not has_ab and not st["initial"]   # (an empty clone is not gone)
     if not _STASH_OK[0]:                       # git < 2.35: count the stash reflog
         out = git_out(repo, "rev-list", "--walk-reflogs", "--count", "refs/stash").strip()
         st["stash"] = int(out) if out.isdigit() else 0

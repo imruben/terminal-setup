@@ -68,6 +68,8 @@ class Guide:
     def __init__(self, screen, tabs):
         self.screen = screen
         self.tabs = tabs
+        # noted now: another terminal opening a popup later changes @popup-client
+        self.client = tmuxlink.client() if os.environ.get("TMUX") else ""
         self.tab = 0
         self.query = ""
         self.top = 0
@@ -232,7 +234,7 @@ class Guide:
         if not os.environ.get("TMUX"):
             print("Open tmux (terminal) to run actions from the guide.")
             sys.exit(0)
-        client = tmuxlink.client()                         # the terminal that opened the guide
+        client = self.client                               # the terminal that opened the guide
         if cmd == "@picker":
             os.execvp("zsh", ["zsh", os.path.join(os.path.dirname(os.path.realpath(__file__)), "terminal.zsh"), "pick"])
         if cmd.startswith("@shell:"):

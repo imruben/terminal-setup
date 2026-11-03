@@ -222,7 +222,7 @@ class Apt:
                 if arch not in (native, "all"):       # another architecture: its own package
                     name = f"{name}:{arch}"
                 rows.append({"name": name, "old": old, "new": new, "origin": suite.split(",")[0],
-                             "security": "security" in suite, "held": name in held or name.split(":")[0] in held})
+                             "security": "security" in suite, "held": name in held})
         return rows
 
     def checked(self):
@@ -576,8 +576,11 @@ class Brew:
         return Brew._catalog[1]
 
     def search(self, words):
-        installed = {f["name"]: (f.get("installed") or [{}])[0].get("version", "")
-                     for f in self.installed_json().get("formulae", [])}
+        try:
+            data = self.installed_json()
+        except OSError:                       # brew did not answer: search anyway, nothing marked installed
+            data = {}
+        installed = {f["name"]: (f.get("installed") or [{}])[0].get("version", "") for f in data.get("formulae", [])}
         cat = self.catalog()
         if cat is not None:
             return [{"name": n, "desc": d, "installed": installed.get(n, "")} for n, (d, _) in cat.items()
@@ -676,10 +679,15 @@ class Brew:
         return f"{self.BIN} update"
 
     def checked(self):
-        try:
-            return os.path.getmtime(os.path.join(self.PREFIX, "Homebrew", ".git", "FETCH_HEAD"))
-        except OSError:
-            return None
+        """When brew last updated: its git (Intel / Linux: PREFIX/Homebrew, Apple Silicon: PREFIX
+        itself), else its API cache (Homebrew 4+ updates through the API)."""
+        for p in (os.path.join(self.PREFIX, "Homebrew", ".git", "FETCH_HEAD"), os.path.join(self.PREFIX, ".git", "FETCH_HEAD"),
+                  self.api_dir()):
+            try:
+                return os.path.getmtime(p)
+            except OSError:
+                continue
+        return None
 
 
 SOURCES = {"apt": Apt, "snap": Snap, "brew": Brew}
@@ -791,8 +799,15 @@ def installed_version(src, name):
     if src.name == "snap":
         s = src.installed().get(name)
         return f"{s.get('version', '')}\t{s.get('summary', '')}" if s else ""
-    f = next((f for f in src.installed_json().get("formulae", []) if f["name"] == name), None)
-    return f"{(f.get('installed') or [{}])[0].get('version', '')}\t{f.get('desc') or ''}" if f else ""
+    try:
+        data = src.installed_json()
+    except OSError:
+        return ""
+    f = next((f for f in data.get("formulae", []) if f["name"] == name), None)
+    if f:
+        return f"{(f.get('installed') or [{}])[0].get('version', '')}\t{f.get('desc') or ''}"
+    c = next((c for c in data.get("casks", []) if c.get("token") == name), None)
+    return f"{c.get('installed') or ''}\t{c.get('desc') or ''}" if c else ""
 
 
 def main(argv):
@@ -803,7 +818,12 @@ def main(argv):
         for s in sources():
             if len(argv) > 1 and s.name != argv[1]:
                 continue
-            for p in sorted(s.mine(), key=lambda p: p["name"]):
+            try:
+                found = s.mine()
+            except OSError as e:                   # one source not answering: the others still print
+                print(f"{s.name}: {e}", file=sys.stderr)
+                continue
+            for p in sorted(found, key=lambda p: p["name"]):
                 print("\t".join((s.name, p["name"], clean(p.get("version")), clean(p.get("desc")))))
             if s.error:
                 print(s.error, file=sys.stderr)

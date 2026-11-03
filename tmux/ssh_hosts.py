@@ -117,7 +117,7 @@ class Hosts(TableApp):
             used[alias] = (n + 1, when if when and (last is None or when > last) else last)
         extra_list = sorted(extra)
         opts = {d: tuple(sshsrc.conn_args(self.extra.get(d))) for d in extra_list}
-        extra_cfgs = self.bg.get(("reading", "history", tuple(sorted(opts.items()))),
+        extra_cfgs = self.bg.get(("reading", "history", stamp, tuple(sorted(opts.items()))),
                                  lambda: self.resolve_all(extra_list, opts), 300) or {}
         cfgs = {**cfgs, **extra_cfgs}
         live = sshsrc.live()
@@ -137,13 +137,16 @@ class Hosts(TableApp):
                 return False
             ks = [by_path.get(p) for p in sshsrc.key_files(c)]
             return bool(ks) and all(k and k["encrypted"] and k["fingerprint"] not in held for k in ks)
-        for d in [d for d, t in self.tests.items() if time.time() - t[2] > TEST_KEEP]:
-            del self.tests[d]                           # an old answer is not today's
+        for d in [d for d, t in list(self.tests.items()) if time.time() - t[2] > TEST_KEEP]:
+            self.tests.pop(d, None)                     # an old answer is not today's
         def asks_you(c):
             """A security key (touch it) or another agent (1Password, Bitwarden: approve it) would
             ask for you even in BatchMode: such hosts are only asked from the menu."""
             ks = [by_path.get(p) for p in sshsrc.key_files(c)]
-            return any(k and k["type"].endswith("-SK") for k in ks) or c.get("identityagent", "none") not in ("none", "")
+            agent = os.path.expanduser(c.get("identityagent", "none"))
+            default = ("none", "", "SSH_AUTH_SOCK", "$SSH_AUTH_SOCK", sshsrc.ssh_env().get("SSH_AUTH_SOCK", ""),
+                       os.path.join(sshsrc.SSH_DIR, "agent.sock"))
+            return any(k and k["type"].endswith("-SK") for k in ks) or agent not in default
         gits = [a for a in aliases if sshsrc.git_service(cfgs.get(a) or {}) and not locked(cfgs.get(a) or {})
                 and not asks_you(cfgs.get(a) or {})]
         accounts = (self.bg.get(("asking", tuple(gits)), lambda: self.accounts(gits), ACCOUNT_EVERY) or {}) if gits else {}
@@ -198,7 +201,7 @@ class Hosts(TableApp):
         up = sum(1 for r in self.all if r["ms"] is not None)
         down = sum(1 for r in self.all if r["state"].startswith("✗"))
         sessions = sum(1 for r in self.all for p in r["live"] if p[1] != "tunnel")
-        bad = next((r["error"] for r in self.all if r["error"]), "")
+        bad = next((r["error"] for r in self.all if r["error"] and not r["history"]), "")
         if bad:
             return f"{RED}~/.ssh/config: {bad}"
         tunnels = sum(1 for r in self.all for p in r["live"] if p[1] == "tunnel")
@@ -266,14 +269,14 @@ class Hosts(TableApp):
             items += [(f"{ICON['git']}  Which {r['service']} account is this key?", "w", lambda: self.ask_account(r)),
                       (f"{ICON['popup']}  ssh -T in a popup", "p",
                        lambda: self.popup(f"ssh -T git@{r['alias']}", f"ssh -T git@{shlex.quote(r['alias'])}; printf '\\npress Enter'; read",
-                                          "70%", "40%"))]
+                                          "70%", "40%", env=self.env()))]
         block = None if r["history"] else next((b for a, b in sshsrc.concrete_hosts() if a == r["alias"]), None)
         items += [("", "", None),
                   (f"{ICON['edit']}  Edit ~/.ssh/config" + (f" (line {block['line']})" if block else ""), "e",
                    lambda: self.edit(block)),
                   (f"{ICON['add']}  Add a host…", "a", self.ask_add),
                   ("", "", None),
-                  (f"{ICON['copy']}  Copy: ssh {r['alias']}", "c", lambda: self.copy(f"ssh {r['alias']}")),
+                  (f"{ICON['copy']}  Copy: {self.ssh_cmd(r)}", "c", lambda: self.copy(self.ssh_cmd(r))),
                   (f"{ICON['copy']}  Copy the address", "d", lambda: self.copy(r["address"]))]
         return items
 
@@ -332,6 +335,9 @@ class Hosts(TableApp):
             account, problem = result
             problem = self.explain(r, problem)
             self.tests[r["alias"]] = (account, "key locked" if problem.startswith("key locked") else problem, time.time())
+            gits = [k for k in list(self.bg.data) if k and k[0] == "asking"]
+            for k in gits:                               # the hourly answer is out of date now
+                self.bg.forget(k)
             self.flash(f"{r['alias']}: {r['service']} sees this key as {account}" if account
                        else f"{r['alias']}: {problem}", ok=bool(account))
         self.run_bg(r, "asking", lambda: sshsrc.git_account(r["alias"]), done)
@@ -385,10 +391,22 @@ class Hosts(TableApp):
         if not os.path.exists(pub):
             self.flash("no public key to install: create one in the Keys pane", ok=False)
             return
-        port = [a for a in self.args(r) if a]               # ssh-copy-id takes -p and -o like ssh
+        # ssh-copy-id knows -p -o -F (and one -i): a history host's other options go as -o
+        opts = []
+        parsed = (self.extra.get(r["alias"]) or {}).get("opts", {}) if r["history"] else {}
+        for v in parsed.get("p", []):
+            opts += ["-p", v]
+        for v in parsed.get("F", []):
+            opts += ["-F", v]
+        for v in parsed.get("o", []):
+            opts += ["-o", v]
+        for v in parsed.get("l", []):
+            opts += ["-o", f"User={v}"]
+        for v in parsed.get("J", []):
+            opts += ["-o", f"ProxyJump={v}"]
         self.popup(f"ssh-copy-id · {tilde(pub)} → {r['alias']}",
                    f"printf '  installs {shlex.quote(tilde(pub))}\\n\\n'; ssh-copy-id -i {shlex.quote(pub)} "
-                   f"{' '.join(map(shlex.quote, port))} {shlex.quote(r['alias'])}; printf '\\npress Enter'; read -r _",
+                   f"{' '.join(map(shlex.quote, opts))} {shlex.quote(r['alias'])}; printf '\\npress Enter'; read -r _",
                    "80%", "50%", env=self.env())
 
     def edit(self, block):
@@ -465,7 +483,7 @@ def add_block(lines):
     at = len(old)
     for n, line in enumerate(old):
         key, value = sshsrc._kv(line.strip()) if line.strip() and not line.strip().startswith("#") else ("", "")
-        if key.lower() == "match" or (key.lower() == "host" and any(c in value for c in "*?!")):
+        if key.lower() == "match" or (key.lower() == "host" and any(c in w for w in sshsrc.words(value) for c in "*?!")):
             at = n
             while at > 0 and old[at - 1].strip().startswith("#"):    # its comment stays with it
                 at -= 1

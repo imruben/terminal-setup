@@ -56,6 +56,8 @@ class Disks(TableApp):
         found = self.bg.get(("reading",), disksrc.mounts, 8) or []
         if found:
             self.last = found
+        if not self.last:
+            return self.all                      # the first df is on its way: no empty list, no shrinking
         rows = []
         for n, d in enumerate(self.last):
             pct = d["used"] / (d["used"] + d["free"]) if d["used"] + d["free"] else 0

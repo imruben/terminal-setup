@@ -70,15 +70,22 @@ def sync_text(st, has_remote):
 
 
 def last_line(out):
-    """The line of git's output that says what went wrong (not 'and the repository exists.')."""
+    """The line of git's output that says what went wrong (not 'and the repository exists.'),
+    and what to do when it is a key or a password the pane cannot ask for."""
     lines = [l.strip() for l in (out or "").strip().splitlines() if l.strip()]
-    for l in lines:
-        if "Permission denied" in l or "Could not resolve" in l or "Connection timed out" in l:
-            return l.replace("git@", "").strip()
-    for l in lines:
-        if l.startswith(("fatal:", "error:", "ERROR:")):
-            return l.split(":", 1)[1].strip()
-    return lines[-1] if lines else "failed"
+    why = next((l for l in lines if "Permission denied" in l or "Could not resolve" in l
+                or "Connection timed out" in l or "Host key verification failed" in l), None)
+    if not why:
+        why = next((l.split(":", 1)[1].strip() for l in lines if l.startswith(("fatal:", "error:", "ERROR:"))),
+                   lines[-1] if lines else "failed")
+    text = " ".join(lines)
+    if any(t in text for t in ("passphrase", "Permission denied", "terminal prompts disabled", "Authentication failed")):
+        why += " · the key or password is asked in a terminal: run it there once (or ssh-add the key)"
+    elif "Host key verification failed" in text:
+        why += " · connect once with ssh in a terminal to trust the host"
+    elif "[rejected]" in text or "fetch first" in text:
+        why = "the remote has commits you do not: pull first"
+    return why.replace("git@", "")
 
 
 class Repos(TableApp):
@@ -167,9 +174,10 @@ class Repos(TableApp):
                            stash_txt="", last="", last_t=None, fetched="", fetched_t=None, doing="", error="")
             else:
                 dirty = st.get("conflicts", 0) * 1000 + st.get("staged", 0) + st.get("modified", 0) + st.get("untracked", 0)
-                branch = st.get("branch") or (f"@{st['detached']}" if st.get("detached") else "")
+                branch = st.get("branch") or ""                    # "" when detached (no branch to push)
+                shown = branch or (f"@{st['detached']}" if st.get("detached") else "")
                 row.update(branch=branch, error=st.get("error", ""), doing=st.get("doing", ""),
-                           branch_txt=(f"{branch} · {st['doing']}" if st.get("doing") else branch) if not st.get("error") else "",
+                           branch_txt=(f"{shown} · {st['doing']}" if st.get("doing") else shown) if not st.get("error") else "",
                            changes=changes_text(st), sync=sync_text(st, row["has_remote"]), dirty=dirty,
                            unsync=(st.get("ahead", 0) + st.get("behind", 0)) if st.get("upstream") else 0,
                            stash=st.get("stash", 0), stash_txt=str(st["stash"]) if st.get("stash") else "",
@@ -275,11 +283,12 @@ class Repos(TableApp):
         items.append((f"{ICON['shell']}  Shell here (popup)", "s", lambda: self.shell(r)))
         ahead, behind = st.get("ahead", 0), st.get("behind", 0)
         tracked = st.get("upstream") and not st.get("gone")
-        can_push = r["has_remote"] and r["branch"] and not st.get("initial") and (ahead or not tracked)
+        free = r["id"] not in self.busy                  # one git at a time on a repo
+        can_push = free and r["has_remote"] and r["branch"] and not st.get("initial") and (ahead or not tracked)
         items += [("", "", None),
-                  (f"{ICON['fetch']}  Fetch", "f", (lambda: self.fetch_one(r)) if r["has_remote"] else None),
+                  (f"{ICON['fetch']}  Fetch", "f", (lambda: self.fetch_one(r)) if r["has_remote"] and free else None),
                   (f"{ICON['pull']}  Pull{f' {behind}' if behind else ''} (fast-forward only)", "p",
-                   (lambda: self.pull(r)) if tracked and not st.get("doing") else None),
+                   (lambda: self.pull(r)) if tracked and free and r["branch"] and not st.get("doing") else None),
                   (f"{ICON['push']}  Push{f' {ahead}' if ahead else ''}…" if tracked else f"{ICON['push']}  Publish the branch…",
                    "P", (lambda: self.ask_push(r)) if can_push else None),
                   (f"{ICON['fetch']}  Fetch every repo", "F", self.fetch_all),
@@ -343,8 +352,6 @@ class Repos(TableApp):
                 ok, out = False, e.strerror
             finally:
                 self.busy.pop(r["id"], None)
-            if not ok and ("passphrase" in out or "Permission denied" in out or "terminal prompts disabled" in out):
-                out += " · the key or password is asked in a terminal: run it there once (or ssh-add the key)"
             self.bg.forget(("status",))
             done(ok, out)
             self.wake()
@@ -381,9 +388,9 @@ class Repos(TableApp):
                         self.flash(f"fetched {len(rows)} repos" + (f" · failed: {', '.join(failed)}" if failed else ""),
                                    ok=not failed)
             self.net(r, "fetching", ["fetch", "--prune", "--quiet"], done)
+        self.flash(f"fetching {len(rows)} repos…")        # before: a quick finish must not be overwritten
         for r in rows:
             one(r)
-        self.flash(f"fetching {len(rows)} repos…")
 
     def pull(self, r):
         def done(ok, out):
@@ -414,10 +421,11 @@ class Repos(TableApp):
         st = r["st"] or {}
         remote = gitsrc.git_out(r["path"], "config", f"branch.{r['branch']}.remote").strip()
         merge = gitsrc.git_out(r["path"], "config", f"branch.{r['branch']}.merge").strip()
+        src = f"refs/heads/{r['branch']}"              # the branch the question named, not what is checked out now
         if st.get("upstream") and not st.get("gone") and remote and merge.startswith("refs/heads/"):
-            args = ["push", remote, f"HEAD:{merge}"]
+            args = ["push", remote, f"{src}:{merge}"]
         else:
-            args = ["push", "-u", r["remote_name"] or "origin", f"HEAD:refs/heads/{r['branch']}"]
+            args = ["push", "-u", r["remote_name"] or "origin", f"{src}:{src}"]
         self.net(r, "pushing", args,
                  lambda ok, out: self.flash(f"{r['repo']}: pushed" if ok else f"{r['repo']}: {last_line(out)}", ok))
 
@@ -430,8 +438,10 @@ class Repos(TableApp):
         def save(text):
             if not text:
                 return
-            path, _, depth = text.rpartition(" ")     # "~/clients 2": how deep to look, like the file
-            path, depth = (path, int(depth)) if path and depth.isdigit() else (text, gitsrc.DEFAULT_DEPTH)
+            parsed = gitsrc.parse_root(text)           # "~/clients 2": how deep, like the file ("~/Projects 2024": a folder)
+            if not parsed:
+                return
+            path, depth = parsed
             err = gitsrc.add_root(path, depth)
             if err:
                 self.flash(err, ok=False)

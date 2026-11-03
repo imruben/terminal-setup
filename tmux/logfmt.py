@@ -89,7 +89,7 @@ def json_level(d):
     raw = next((d[k] for k in ("level", "lvl", "severity", "levelname", "level_name") if d.get(k) not in (None, "")),
                log.get("level", ""))
     if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-        return next(name for floor, name in NUMERIC_LEVEL if raw >= floor)
+        return next((name for floor, name in NUMERIC_LEVEL if raw >= floor), "debug")    # -1, NaN: lowest
     return LEVEL_WORDS.get(str(raw).lower())
 
 

@@ -304,6 +304,8 @@ class Viewer:
                 self.copy_rows(*self.sel)
             elif self.dragging is not None:
                 self.sel = None                      # a plain click clears the selection
+                if getattr(self, "_was_following", False):
+                    self.following = True            # and does not pause a log that follows the end
             self.dragging = None
             return
         if b == 2 and not released:
@@ -330,11 +332,16 @@ class Viewer:
         if i is not None:
             self.dragging = i
             self.sel = (i, i)
+            self._was_following = self.following
             if self.follow_end:                      # don't let new lines move what you select
                 self.following = False
 
     def tick(self):
         self.poll()
+        at = getattr(self, "_rewrap_at", None)
+        if at and time.monotonic() - at > 0.3 and self.key and not self.menu:
+            self._rewrap_at = None
+            self.reload()
 
     def on_char(self, text):
         """Typed text (viewers with a search box use it)."""
@@ -377,7 +384,7 @@ class BackgroundViewer(Viewer):
 
     def tick(self):
         super().tick()
-        if self._ready and self.visible:
+        if self._ready and self.visible and not self.menu:     # (a menu open: what it copies stays)
             self._ready = False
             self.reload()
 
@@ -416,8 +423,8 @@ def run(viewer_class):
                     if size != getattr(v, "_size", None):
                         width_changed = size[1] != getattr(v, "_size", (0, 0))[1]
                         v._size, v.menu = size, None
-                        if width_changed and v.key:            # wrapped for another width: again
-                            v.reload()
+                        if width_changed and v.key:            # wrapped for another width: again, once
+                            v._rewrap_at = time.monotonic()    # the resize stops (no reload per step)
                     v.zoomed = tmuxlink.pane_state("")[0]   # zoom / restore resize the pane
                 v.draw()
     except SystemExit as e:

@@ -61,7 +61,7 @@ class Updates(SourcesPane, TableApp):
             for u in found:
                 held = u.get("held", False)
                 rows.append({**u, "id": f"{s.name}:{u['name']}", "src": s.name, "held": held,
-                             "origin": ("held · " if held else "") + u["origin"],
+                             "origin": ("held · " if held and u["origin"] != "pinned" else "") + u["origin"],
                              "why": notes.get(note_key(s.name, u["name"]), ""),
                              "order": (held, not u["security"], u["name"])})
         return rows
@@ -119,7 +119,7 @@ class Updates(SourcesPane, TableApp):
                  lambda: self.confirm(
                     f"Upgrade {r['name']} {r['old']} → {r['new']}?",
                     lambda: pkg_popup(self, f"upgrade · {r['name']} · {r['src']}", s.upgrade(r["name"])), r)),
-                (f"{ICON['all']}  Upgrade everything from {r['src']} ({n})…", "a", lambda: self.ask_all(s, r)),
+                (f"{ICON['all']}  Upgrade everything from {r['src']} ({n})…", "a", (lambda: self.ask_all(s, r)) if n else None),
                 ("", "", None)] + self.check_items() + \
                [(f"{ICON['info']}  Details", "d", lambda: tmuxlink.focus("Package"))]
 
@@ -132,7 +132,7 @@ class Updates(SourcesPane, TableApp):
         items = self.check_items()
         for s in pkgsrc.sources():
             n = len(self.of(s.name))
-            if n:
+            if n:                                   # (nothing to upgrade when all of it is held)
                 items.append((f"{ICON['all']}  Upgrade everything from {s.name} ({n})…", "",
                               lambda s=s: self.ask_all(s, None)))
         return items

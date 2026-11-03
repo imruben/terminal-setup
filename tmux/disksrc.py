@@ -227,7 +227,9 @@ class Measure:
     def errors(self):
         for raw in self.proc.stderr:
             line = raw.decode("utf-8", "surrogateescape")
-            m = re.search(r"cannot (?:read directory|access) '(.+?)'", line) or re.match(r"du: (.+?): ", line)
+            m = (re.search(r"cannot (?:read directory|access) '(.+?)'", line)              # GNU: 'path'
+                 or re.search(r'cannot (?:read directory|access) "(.+?)"', line)           # GNU, a ' in the path
+                 or re.match(r"du: (.+?): ", line))                                       # BSD
             if m:
                 self.unreadable.add(m[1])
 

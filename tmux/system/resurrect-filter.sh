@@ -21,6 +21,7 @@ file=$1
 awk -F'\t' '!(($1 == "pane" || $1 == "window" || $1 == "grouped_session") && $2 == "system")' "$file" > "$file.tmp" \
   && mv "$file.tmp" "$file"
 dir=$(dirname "$file")
+rm -f "$dir/pane_contents.tar.gz.keep"          # one left by a save that died halfway: not this save's
 last=$dir/last
 if [[ -z $TERMINAL_SAVE_EMPTY ]] && ! grep -q '^pane' "$file" && grep -qs '^pane' "$last"; then
   cat "$last" > "$file"
