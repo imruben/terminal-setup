@@ -30,8 +30,6 @@ import re
 import shutil
 import socket
 import subprocess
-import threading
-import time
 import sys
 import urllib.parse
 
@@ -609,41 +607,8 @@ def source(name):
     return _live.setdefault(name, cls()) if cls and cls.available() else None
 
 
-# ─── background answers ───
-class Background:
-    """get(key, fn, ttl): the last answer for key (None until the first one), asking again
-    in a thread once it is older than ttl. on_ready() runs when an answer arrives."""
-
-    def __init__(self, on_ready):
-        self.data, self.busy, self.on_ready = {}, set(), on_ready
-        self.lock = threading.Lock()
-
-    def get(self, key, fn, ttl):
-        with self.lock:
-            value, at = self.data.get(key, (None, 0.0))
-            if key in self.busy or time.monotonic() - at < ttl:
-                return value
-            self.busy.add(key)
-
-        def work():
-            try:
-                result = fn()
-            except Exception:                    # a source failing must not take the pane down
-                result = []
-            with self.lock:
-                self.data[key] = (result, time.monotonic())
-                self.busy.discard(key)
-            self.on_ready()
-        threading.Thread(target=work, daemon=True).start()
-        return value
-
-    def loading(self):
-        with self.lock:
-            return {k[0] for k in self.busy}
-
-    def forget(self):
-        with self.lock:
-            self.data.clear()
+# ─── background answers: tmux/background.py (also used by the disk, ssh and git panes) ───
+from background import Background  # noqa: E402,F401
 
 
 # ─── shared by the table panes ───

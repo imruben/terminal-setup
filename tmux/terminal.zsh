@@ -271,7 +271,7 @@ help() {
     ${Y}terminal rename${X} <old> <new>    rename a session
     ${Y}terminal kill${X} <name>           kill a session
     ${Y}terminal kill-all${X}              kill every session (the system monitor stays)
-    ${Y}terminal system${X}                system monitor ${D}(info · processes & ports · packages · docker · opens in new tabs)${X}
+    ${Y}terminal system${X}                system monitor ${D}(info · processes & ports · disk · packages · ssh · docker · git · opens in new tabs)${X}
     ${Y}terminal system restart${X}        rebuild the system monitor
     ${Y}terminal guide${X}                 tmux guide ${D}(same as Ctrl+a ? inside tmux)${X}
     ${Y}terminal files${X}                 every file the install put on this machine, and what it is for

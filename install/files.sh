@@ -24,10 +24,12 @@ file() {
 group() { printf '\n  %s%s%s  %s%s%s\n' "$B" "$1" "$R" "$D" "$2" "$R"; }
 
 group "Your files" "the install adds a few lines at their end, between two marks"
-for f in .zshrc .tmux.conf; do
+for f in .zshrc .tmux.conf .zshenv; do
   if has_block "$HOME/$f"; then
     lines=$(grep -nF -e "$MARK_BEGIN" -e "$MARK_END" "$HOME/$f" | cut -d: -f1 | paste -sd- -)
-    file "$HOME/$f" "loads the repo's $([ $f = .zshrc ] && echo zsh/zshrc || echo tmux/tmux.conf) · lines $lines"
+    case $f in .zshrc) what="loads the repo's zsh/zshrc" ;; .tmux.conf) what="loads the repo's tmux/tmux.conf" ;;
+               *) what="skips the system's compinit (zsh/zshrc runs it)" ;; esac
+    file "$HOME/$f" "$what · lines $lines"
   else
     printf '    %s– %-44s does not load terminal-setup (run ./install.sh)%s\n' "$D" "~/$f" "$R"
   fi
@@ -143,6 +145,7 @@ file "$HOME/.tmux/descriptions.tsv" "what each session is for (session picker �
 file "${XDG_DATA_HOME:-$HOME/.local/share}/tmux/resurrect" "the saved sessions (tmux-resurrect)"
 file "$HOME/.apt-notes.tsv" "why you installed each package (Packages pane → Why…)"
 file "$HOME/.apt-base.txt" "apt packages the system came with (not shown as yours)"
+file "$HOME/.tmux/git-roots" "the folders the git tab looks for repos in (Repos pane → Edit…)"
 
 group "Backups" "your files as they were before a change, just in case · nothing deletes them"
 backups=$(ls -1d "$HOME"/.terminal-setup-backup/*/ 2>/dev/null)

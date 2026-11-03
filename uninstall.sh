@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════
 #  terminal-setup · undo the install
-#    ./uninstall.sh         takes the terminal-setup lines out of ~/.zshrc and ~/.tmux.conf
+#    ./uninstall.sh         takes the terminal-setup lines out of ~/.zshrc, ~/.tmux.conf and ~/.zshenv
 #                           (the rest of those files stays as it is)
 #    ./uninstall.sh --yes   no questions
 #  Packages, the font and the plugins stay installed (other things may use them), and
@@ -22,7 +22,7 @@ BACKUP_DIR="$HOME/.terminal-setup-backup/$(date +%Y%m%d-%H%M%S)"
 printf '\n%sterminal-setup · uninstall%s\n' "$B" "$R"
 step "Plan"
 blocks="" copies="" links=$(links_into_repo)
-for f in .zshrc .tmux.conf; do has_block "$HOME/$f" && { check_marks "$HOME/$f"; blocks="$blocks $f"; }; done
+for f in .zshrc .tmux.conf .zshenv; do has_block "$HOME/$f" && { check_marks "$HOME/$f"; blocks="$blocks $f"; }; done
 while read -r src dst; do
   [ -n "$src" ] && [ ! -L "$HOME/$dst" ] && cmp -s "$REPO/$src" "$HOME/$dst" && copies="$copies $dst"
 done <<< "$COPIES"

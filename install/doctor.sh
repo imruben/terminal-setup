@@ -44,7 +44,9 @@ need jq
 need entr "" "entr -h 2>&1 | head -1; echo 0"
 need ansifilter
 need delta
-optional docker "the docker tab"
+optional docker "the docker tab, Docker in the disk tab's Cleanup"
+optional ssh "the ssh tab"
+optional lazygit "lazygit from the git tab"
 optional gh "GitHub from the shell"
 [ "$OS" = macos ] || optional snap "snap packages in the packages tab"
 optional brew "Homebrew packages in the packages tab"
@@ -56,9 +58,10 @@ fi
 
 printf '\n  %sConfig%s\n' "$B" "$R"
 . "$REPO/install/config.sh"
-for f in .zshrc .tmux.conf; do
-  case $f in .zshrc) want=$(block_zsh) ;; *) want=$(block_tmux) ;; esac
-  if has_block "$HOME/$f" && [ "$(block_in "$HOME/$f")" = "$want" ]; then ok "~/$f loads terminal-setup"
+for f in .zshrc .tmux.conf .zshenv; do
+  case $f in .zshrc) want=$(block_zsh) ;; .zshenv) want=$(block_zshenv) ;; *) want=$(block_tmux) ;; esac
+  case $f in .zshenv) what="skips the system's compinit (zsh/zshrc runs it)" ;; *) what="loads terminal-setup" ;; esac
+  if has_block "$HOME/$f" && [ "$(block_in "$HOME/$f")" = "$want" ]; then ok "~/$f $what"
   elif has_block "$HOME/$f"; then fail "~/$f loads terminal-setup from another folder (run ./install.sh)"; problems=$((problems + 1))
   else fail "~/$f does not load terminal-setup (run ./install.sh)"; problems=$((problems + 1)); fi
 done

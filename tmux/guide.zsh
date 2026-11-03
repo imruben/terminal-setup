@@ -83,7 +83,7 @@ click here|Swap with the previous pane|swap-pane -U
 [Ctrl+a] [U]|Update plugins|run-shell ~/.tmux/plugins/tpm/bindings/update_plugins
 [Ctrl+a] [/]|What does a key do? · press it to find out|command-prompt -k -p key { list-keys -1N "%%" }
 [Ctrl+a] [Ctrl+a]|Send Ctrl+a to the program · start of line in the shell|
-@System monitor|the system session · 1 info · 2 monitor (processes, ports) · 3 packages · 4 docker
+@System monitor|the system session · 1 info · 2 monitor (processes, ports) · 3 disk · 4 packages · 5 ssh · 6 docker · 7 git
 [Ctrl+a] [M]|Go to the system monitor · or click CPU / RAM on the bar|@keys:M
 [Right-click] a container|Logs · shell as you or root · open its port · start, restart, stop, pause, kill, remove · compose project (ask first)|
 [Double-click] a port in Containers or Ports|Open http://localhost:PORT in the browser|
@@ -93,6 +93,15 @@ type in Search|Find any apt, snap or brew package · right-click to install it (
 [Right-click] an update|Upgrade it or everything from its source (ask first) · check for updates|
 [Click] all · apt · snap · brew|Show the packages of one source only (on the Packages, Updates and Search titles)|
 [Right-click] a process|Stop · force kill (both ask first) · show its ports · copy PID or command|
+[Double-click] a folder in Folders|Go into it · .. or [Backspace] goes up · a file opens with the system's app|
+[Right-click] a folder|Open · open with the system's app · terminal session here · measure again · delete (asks first)|
+[Right-click] in Cleanup|Clean it (asks first, says how much) · show its folder · run clean|
+[Double-click] a disk|Show its folders (in Folders)|
+[Double-click] a host|Connect in a session of its own (ssh-NAME) · a git host: which account sees your key|
+[Right-click] a host|Connect in a popup · test the login · open / close a tunnel · install your key · edit ~/.ssh/config · add a host|
+[Right-click] a key|Copy the public key · add to / remove from the agent · create a new key|
+[Double-click] a repo|Open it in a session of its own|
+[Right-click] a repo|Fetch · pull (fast-forward only) · push (asks first) · fetch every repo · lazygit · open its page · folders to look in|
 [Right-click] a port|Open in the browser · copy · stop its program (asks first) · show the process or container|
 [Del]|Stop the highlighted process or port program · asks first|
 [↑] [↓] [PgUp] [PgDn] [Home] [End]|Move in a list · the panes next to it follow the highlighted row|
@@ -103,7 +112,7 @@ click a column title|Sort by it · click again to reverse|
 [Double-click] a row|Its main action: open the port in the browser · elsewhere its menu|
 [Wheel] on a long menu|Scroll it · ▲ ▼ on its border show there is more|
 type|Filter the list · Esc or a click on ✕ clears it|
-[Tab] / [←] [→] in details, Logs, Package|Next / previous tab (or click it)|
+[Tab] / [←] [→] in details, Logs, Package, Host, Repo|Next / previous tab (or click it)|
 [Enter] in details, Logs, Package|Its menu · copy, select text, save, time range, zoom|
 [Ctrl+a] [X] in system|Restart the monitor (it is always there) · a pane or tab you close comes back by itself|
 [Click] 󰊓 zoom on a pane title|Zoom that pane · 󰊔 restore (or double-click the title)|

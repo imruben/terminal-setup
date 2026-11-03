@@ -56,7 +56,13 @@ bindkey '^H' backward-kill-word
 ZSH_AUTOSUGGEST_BUFFER_MAX_SIZE=100
 ZSH_HIGHLIGHT_MAXLENGTH=512
 
-autoload -Uz compinit && compinit
+# Dump in ~/.cache; full security check (compaudit) only once a day, -C otherwise
+_zcd=${XDG_CACHE_HOME:-$HOME/.cache}/zsh/zcompdump
+[[ -d ${_zcd:h} ]] || mkdir -p ${_zcd:h}
+autoload -Uz compinit
+_zfresh=( $_zcd(N.mh-24) )        # glob qualifier: non-empty if the dump is < 24h old
+if (( $#_zfresh )); then compinit -C -d $_zcd; else compinit -d $_zcd; fi
+unset _zcd _zfresh
 # LS_COLORS (also used by completion): dircolors on Linux, gdircolors (coreutils) on macOS
 if (( $+commands[dircolors] )); then eval "$(dircolors -b)"
 elif (( $+commands[gdircolors] )); then eval "$(gdircolors -b)"

@@ -5,10 +5,16 @@
 #    1 info:      fastfetch         │ btop
 #                 Resources         │
 #    2 monitor:   Processes │ Ports                      (interactive: hover, right-click,
-#    3 packages:  Packages  │ Search                      type to filter, click a title
-#                 Updates   │ Package (details)           to sort, Del asks to stop)
-#    4 docker:    Containers (like dps)
+#    3 disk:      Folders   │ Disks                       type to filter, click a title
+#                           │ Cleanup                     to sort, Del asks to stop)
+#    4 packages:  Packages  │ Search
+#                 Updates   │ Package (details)
+#    5 ssh:       Hosts
+#                 Host (details · config · recent) │ Keys
+#    6 docker:    Containers (like dps)
 #                 Container (details · Dockerfile · Compose) │ Logs (live)
+#    7 git:       Repos (the folders of ~/.tmux/git-roots)
+#                 Repo (status · diff · log · branches · stash)
 #
 #  system.sh                 open it (attach, or switch when already in tmux)
 #  system.sh go <client>     switch that client to it (Ctrl+a M, click on CPU/RAM)
@@ -32,7 +38,7 @@ LOCK=${XDG_RUNTIME_DIR:-/tmp}/tmux-system-$UID${key:+-$key}.lock   # one lock pe
 
 build() {
   local py="python3 -I $TERMINAL_SETUP/tmux" sh="${SHELL:-zsh}"
-  local info res btop procs ports pkgs updates search pkg cont det logs
+  local info res btop procs ports folders disks clean pkgs updates search pkg hosts hostd keys cont det logs repos repo
   # 1 · info: fastfetch with Resources below it · btop on the right
   tmux ${NOSTART:+-N} new-session -d -s $S -n info -x 200 -y 50 -c "$HOME" "$KEEP $D/info.sh" || return
   info=$(tmux display -p -t "$S:info" '#{pane_id}')
@@ -41,24 +47,37 @@ build() {
   # 2 · monitor: processes and ports (interactive)
   procs=$(tmux new-window -d -t "$S:" -n monitor -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/procs.py")
   ports=$(tmux split-window -h -l 48% -t "$procs" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/ports.py")
-  # 3 · packages: yours · updates │ search all · details of the highlighted one
+  # 3 · disk: what takes the space (like ncdu) │ the disks · what can be cleaned
+  folders=$(tmux new-window -d -t "$S:" -n disk -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/disk_folders.py")
+  disks=$(tmux split-window -h -l 44% -t "$folders" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/disk_mounts.py")
+  clean=$(tmux split-window -v -l 72% -t "$disks" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/disk_cleanup.py")
+  # 4 · packages: yours · updates │ search all · details of the highlighted one
   pkgs=$(tmux new-window -d -t "$S:" -n packages -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/packages.py")
   search=$(tmux split-window -h -l 50% -t "$pkgs" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/pkgsearch.py")
   updates=$(tmux split-window -v -l 40% -t "$pkgs" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/updates.py")
   pkg=$(tmux split-window -v -l 55% -t "$search" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/pkginfo.py")
-  # 4 · docker: containers (like dps) on top · details + Dockerfile │ live logs
+  # 5 · ssh: the hosts of ~/.ssh/config on top · the highlighted one │ your keys and the agent
+  hosts=$(tmux new-window -d -t "$S:" -n ssh -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/ssh_hosts.py")
+  hostd=$(tmux split-window -v -l 58% -t "$hosts" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/ssh_host.py")
+  keys=$(tmux split-window -h -l 46% -t "$hostd" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/ssh_keys.py")
+  # 6 · docker: containers (like dps) on top · details + Dockerfile │ live logs
   cont=$(tmux new-window -d -t "$S:" -n docker -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/docker.py")
   det=$(tmux split-window -v -l 62% -t "$cont" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/docker_details.py")
   logs=$(tmux split-window -h -l 52% -t "$det" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/docker_logs.py")
+  # 7 · git: your repos on top · the highlighted one below
+  repos=$(tmux new-window -d -t "$S:" -n git -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/git_repos.py")
+  repo=$(tmux split-window -v -l 58% -t "$repos" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/git_repo.py")
 
   local pair
   for pair in "$info=Info" "$res=Resources" "$btop=btop" "$procs=Processes" "$ports=Ports" \
+              "$folders=Folders" "$disks=Disks" "$clean=Cleanup" \
               "$pkgs=Packages" "$updates=Updates" "$search=Search" "$pkg=Package" \
-              "$cont=Containers" "$det=Container" "$logs=Logs"; do
+              "$hosts=Hosts" "$hostd=Host" "$keys=Keys" \
+              "$cont=Containers" "$det=Container" "$logs=Logs" "$repos=Repos" "$repo=Repo"; do
     tmux set -p -t "${pair%%=*}" @label "${pair#*=}"
   done
   local w
-  for w in info:󰋽 monitor:󰐰 packages:󰏗 docker:󰡨; do
+  for w in info:󰋽 monitor:󰐰 disk:󰋊 packages:󰏗 ssh:󰣀 docker:󰡨 git:󰊢; do
     tmux set -w -t "$S:${w%%:*}" automatic-rename off \; set -w -t "$S:${w%%:*}" @icon "${w#*:}"
   done
   # When the Info tab changes size (fullscreen, a client of another size…): keep Resources
@@ -69,13 +88,16 @@ build() {
   # same for the docker tab: the Containers list keeps a useful height (tmux/system/docker-fit.sh)
   tmux set-hook -w -t "$S:docker" window-resized "run-shell -b '$D/docker-fit.sh $cont'"
   "$D/docker-fit.sh" "$cont"
-  tmux set -t "$S:" @description "System · info, processes & ports, packages, docker"
+  # and Disks keeps the height of its list, Cleanup below gets the rest (tmux/system/disk-fit.sh)
+  tmux set-hook -w -t "$S:disk" window-resized "run-shell -b '$D/disk-fit.sh $disks'"
+  tmux set -t "$S:" @description "System · info, processes & ports, disk, packages, ssh, docker, git"
   tmux select-window -t "$S:info" \; select-pane -t "$info"
 }
 
 # Every labelled pane must be there (extra tabs of your own are fine); anything missing
 # (a pane was closed, an old save brought it back without its programs) → rebuild.
-NEEDED="Container Containers Info Logs Package Packages Ports Processes Resources Search Updates btop"
+NEEDED="Cleanup Container Containers Disks Folders Host Hosts Info Keys Logs Package Packages Ports Processes
+        Repo Repos Resources Search Updates btop"
 healthy() {
   local have; have=" $(tmux list-panes -s -t "=$S" -F '#{@label}' 2>/dev/null | tr '\n' ' ') "
   local l; for l in $NEEDED; do [[ $have == *" $l "* ]] || return 1; done

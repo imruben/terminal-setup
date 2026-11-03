@@ -32,7 +32,7 @@ config: ## only the config files (no packages, font, plugins, update)
 dry-run: ## show what install would do, changing nothing
 	./install.sh --dry-run --yes
 
-uninstall: ## take the terminal-setup lines out of ~/.zshrc and ~/.tmux.conf
+uninstall: ## take the terminal-setup lines out of ~/.zshrc, ~/.tmux.conf and ~/.zshenv
 	./uninstall.sh $(YES_FLAG)
 
 doctor: ## check the installation (versions, config, plugins, font)

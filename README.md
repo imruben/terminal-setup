@@ -1,6 +1,6 @@
 # terminal-setup
 
-Mi terminal, lista en minutos en cualquier máquina: **zsh** con prompt, autocompletado y atajos, y **tmux** con todo integrado: barra con pestañas y botones, menús con el ratón, una guía de atajos con buscador y un **monitor del sistema** (procesos, puertos, paquetes, contenedores Docker y sus logs).
+Mi terminal, lista en minutos en cualquier máquina: **zsh** con prompt, autocompletado y atajos, y **tmux** con todo integrado: barra con pestañas y botones, menús con el ratón, una guía de atajos con buscador y un **monitor del sistema** (procesos, puertos, disco, paquetes, servidores SSH, contenedores Docker y sus logs, y tus repos git).
 
 Funciona en **Ubuntu 26.04**, **Ubuntu 24.04**, **WSL** (Ubuntu dentro de Windows) y **macOS**.
 
@@ -56,8 +56,13 @@ Funciona en **Ubuntu 26.04**, **Ubuntu 24.04**, **WSL** (Ubuntu dentro de Window
 |---|---|
 | 1 · info | resumen del equipo (fastfetch), recursos (CPU, RAM, GPU, discos, red, ping) y btop |
 | 2 · monitor | procesos y puertos: ordenar, filtrar, parar (pregunta antes), saltar de uno a otro |
-| 3 · packages | tus paquetes (apt, snap, brew) con notas, actualizaciones, buscador e información de cada uno |
-| 4 · docker | contenedores, detalle (Dockerfile, compose, configuración final), logs en vivo con buscador |
+| 3 · disk | qué ocupa sitio, carpeta a carpeta (como ncdu), los discos y lo que se puede limpiar (apt, journal, snap, brew, Docker, cachés de pip / npm / Composer…, versiones viejas de Claude Code), con cuánto libera cada cosa |
+| 4 · packages | tus paquetes (apt, snap, brew) con notas, actualizaciones, buscador e información de cada uno |
+| 5 · ssh | los hosts de `~/.ssh/config` (y los que usaste a mano): si responden, qué cuenta ve GitHub con tu clave, sesiones y túneles abiertos; conectar, abrir un túnel, instalar tu clave; tus claves y cuáles tiene el agente |
+| 6 · docker | contenedores, detalle (Dockerfile, compose, configuración final), logs en vivo con buscador |
+| 7 · git | todos tus repos: rama, cambios, ↑ por subir · ↓ por bajar, stash, último commit y fetch, con qué identidad haces commit; estado, diff, log, ramas y stash de cada uno; fetch, pull, push (pregunta antes) |
+
+La pestaña **git** busca repos en las carpetas de `~/.tmux/git-roots` (una por línea, y opcionalmente cuántos niveles bajar: `~/clientes 2`). Sin ese fichero mira `~/workspace`, `~/projects`, `~/code`, `~/src`, `~/dev`, `~/repos` y `~/git`. Se cambia desde el propio panel: clic derecho → *Add a folder to look in…* o *Edit the folders to look in…*.
 
 Solo trabaja lo que estás viendo: las pestañas ocultas (y todo el monitor cuando no está a la vista o nadie está conectado) no leen nada ni gastan CPU, y se ponen al día en cuanto aparecen.
 
@@ -119,6 +124,8 @@ En WSL, «abrir en el navegador» y `open` usan el navegador y el Explorador **d
 ### macOS
 
 > **Estado**: probado en un Mac. El monitor usa las herramientas propias de macOS (procesos con `ps`, puertos con `lsof`, memoria con `vm_stat`, red con `netstat`…). Si algo falla, `bash install/doctor.sh` es el primer paso.
+>
+> La pestaña **disk** mide tu carpeta personal: la primera vez macOS pregunta si la terminal puede leer Documentos, Escritorio, Descargas… Si dices que no, esas carpetas salen como «unreadable» y el resto se mide igual. Las pestañas disk, ssh y git aún no se han probado en un Mac.
 
 1. **Herramientas de línea de comandos de Apple** (traen git):
    ```bash
@@ -148,7 +155,7 @@ En WSL, «abrir en el navegador» y `open` usan el navegador y el Explorador **d
    source "/ruta/al/repo/zsh/zshrc"
    # <<< terminal-setup <<<
    ```
-   En `~/.tmux.conf` es lo mismo, con `source-file`. El resto de tus ficheros queda igual; por si acaso, guarda una copia de cómo estaban en `~/.terminal-setup-backup/<fecha>/`.
+   En `~/.tmux.conf` es lo mismo, con `source-file`. En `~/.zshenv` añade `skip_global_compinit=1`, para que Ubuntu no cargue el autocompletado otra vez antes que el repo. El resto de tus ficheros queda igual; por si acaso, guarda una copia de cómo estaban en `~/.terminal-setup-backup/<fecha>/`.
    - Ese `source` carga también los alias y las funciones del repo: no hace falta nada más.
    - `~/.tmux` sigue siendo una carpeta tuya: ahí van los plugins, los logs y las descripciones de sesión.
    - El prompt usa el `starship.toml` del repo (variable `STARSHIP_CONFIG`). La config de btop y la de micro se copian solo si no tienes una.
@@ -195,7 +202,7 @@ Lo mismo con **`make`** (si no lo tienes: `sudo apt install make`; `./install.sh
 | JetBrainsMono Nerd Font | `~/.local/share/fonts` (en WSL: en Windows) | igual | Homebrew |
 | plugins (tpm, resurrect, continuum, extrakto, fzf-url, logging, cowboy, autoreload, fzf-tab) | git | git | git |
 
-**Opcionales** (si están, se usan; si no, no pasa nada): **Docker** (pestaña docker), **gh** (GitHub), **snap** y **Homebrew** en Linux (aparecen en la pestaña packages), **nvidia-smi** (GPU en Resources).
+**Opcionales** (si están, se usan; si no, no pasa nada): **Docker** (pestaña docker y su limpieza en disk), **lazygit** o **tig** (desde la pestaña git), **gh** (GitHub), **snap** y **Homebrew** en Linux (aparecen en la pestaña packages), **nvidia-smi** (GPU en Resources).
 
 ---
 
@@ -260,7 +267,7 @@ git pull          # lo último del repo
 cd ~/workspace/terminal-setup && ./uninstall.sh
 ```
 
-Quita **solo las líneas de terminal-setup** de `~/.zshrc` y `~/.tmux.conf`; el resto de esos ficheros queda igual (si solo tenían esas líneas, los borra). También quita las configs de btop y micro que copió, si no las has cambiado.
+Quita **solo las líneas de terminal-setup** de `~/.zshrc`, `~/.tmux.conf` y `~/.zshenv`; el resto de esos ficheros queda igual (si solo tenían esas líneas, los borra). También quita las configs de btop y micro que copió, si no las has cambiado.
 
 Los paquetes, la fuente y los plugins **se quedan instalados**, porque otras cosas pueden usarlos. `~/.tmux` también se queda, porque ahí están tus logs.
 
@@ -279,7 +286,7 @@ terminal-setup/
 │   ├── tmux-build.sh               compila tmux (Ubuntu 24.04)
 │   ├── brew.sh · Brewfile          macOS
 │   ├── fonts.sh                    JetBrainsMono Nerd Font
-│   ├── config.sh                   las líneas en ~/.zshrc y ~/.tmux.conf
+│   ├── config.sh                   las líneas en ~/.zshrc, ~/.tmux.conf y ~/.zshenv
 │   ├── plugins.sh · plugins.lock   plugins en sus versiones probadas
 │   ├── doctor.sh                   comprobación
 │   └── files.sh                    qué archivos ha puesto y para qué (terminal files)

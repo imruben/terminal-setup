@@ -2,6 +2,8 @@
 #  terminal-setup · your config files. Nothing is replaced and nothing is linked:
 #    ~/.zshrc       gets, at its end:  source "<repo>/zsh/zshrc"
 #    ~/.tmux.conf   gets, at its end:  TERMINAL_SETUP="<repo>" + source-file of tmux/tmux.conf
+#    ~/.zshenv      gets, at its end:  skip_global_compinit=1 (Ubuntu's /etc/zsh/zshrc would run
+#                   compinit too, before zsh/zshrc runs its own: completion loaded twice)
 #  between two marks, so ./uninstall.sh can take exactly those lines out again.
 #  ~/.tmux stays yours (tpm puts the plugins there; logs, session descriptions…).
 #  The prompt reads the repo's starship.toml (STARSHIP_CONFIG, set by zsh/zshrc);
@@ -22,6 +24,10 @@ config/micro/settings.json .config/micro/settings.json
 block_zsh() {
   printf '%s\n' "$MARK_BEGIN  (./uninstall.sh takes it out)" \
     "source \"$REPO/zsh/zshrc\"" "$MARK_END"
+}
+block_zshenv() {
+  printf '%s\n' "$MARK_BEGIN  (./uninstall.sh takes it out)" \
+    "skip_global_compinit=1   # zsh/zshrc runs compinit itself" "$MARK_END"
 }
 block_tmux() {
   printf '%s\n' "$MARK_BEGIN  (./uninstall.sh takes it out)" \
@@ -140,6 +146,7 @@ configure() {
   zshrc_clashes
   add_block "$HOME/.zshrc" "$(block_zsh)"
   add_block "$HOME/.tmux.conf" "$(block_tmux)"
+  add_block "$HOME/.zshenv" "$(block_zshenv)"
   run mkdir -p "$HOME/.tmux/plugins"
   local src dst
   while read -r src dst; do
