@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # ═══════════════════════════════════════════════════════════════
 #  terminal-setup · packages on Ubuntu 24.04 / 26.04 (also inside WSL)
 #  Only what is missing is installed. What Ubuntu's own version cannot do is

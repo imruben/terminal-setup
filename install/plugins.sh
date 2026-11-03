@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # ═══════════════════════════════════════════════════════════════
 #  terminal-setup · tmux and zsh plugins, at the versions in install/plugins.lock
 #    tmux/<name> → ~/.tmux/plugins/<name>   (tpm and the tmux plugins)

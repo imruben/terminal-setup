@@ -1,3 +1,4 @@
+# shellcheck shell=bash disable=SC2034  # its variables are read by the scripts that source it
 # ═══════════════════════════════════════════════════════════════
 #  terminal-setup · shared helpers for install.sh and its parts
 #  bash 3.2 compatible (macOS's /bin/bash): no associative arrays, no ${x,,}…

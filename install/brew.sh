@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # ═══════════════════════════════════════════════════════════════
 #  terminal-setup · packages on macOS, with Homebrew (install/Brewfile)
 #  Homebrew itself is installed first when it is missing (it asks for your

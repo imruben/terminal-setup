@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # ═══════════════════════════════════════════════════════════════
 #  terminal-setup · tmux from source, for systems whose tmux is older than
 #  $TMUX_MIN (Ubuntu 24.04 ships 3.4). Installs into /usr/local, which comes
