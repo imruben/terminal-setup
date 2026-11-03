@@ -57,7 +57,7 @@ class Keys(TableApp):
 
     def fetch(self):
         loaded, self.problem = sshsrc.agent_keys()
-        users = self.bg.get(("reading", sshsrc.config_stamp()), self.users, 300) or {}
+        users = self.bg.get_for(("reading",), sshsrc.config_stamp(), self.users, 300) or {}
         found = list(sshsrc.keys())
         have = {k["path"] for k in found}
         for path in sorted(users):                   # keys the config uses from other folders (~/keys/prod…)

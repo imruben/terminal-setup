@@ -40,12 +40,13 @@ TEST_KEEP = 300          # a login test or account answer from the menu is shown
 LINE_EDITORS = ("micro", "vim", "nvim", "vi", "nano", "emacs", "kak", "hx", "helix")   # take +LINE
 
 
-def session_name(alias):
-    """ssh-NAME (characters tmux does not take become -) · when another host of ~/.ssh/config
-    would get the same name (a.b and a-b: ssh-a-b), a short hash of the alias keeps them apart."""
+def session_name(alias, others=()):
+    """ssh-NAME (characters tmux does not take become -) · when another host (of ~/.ssh/config,
+    or others: the history ones the pane shows) would get the same name (a.b and a-b: ssh-a-b),
+    a short hash of the alias keeps them apart."""
     clean = re.sub(r"[^\w-]", "-", alias)
     if clean != alias and any(o != alias and re.sub(r"[^\w-]", "-", o) == clean
-                              for o, _ in sshsrc.concrete_hosts()):
+                              for o in [a for a, _ in sshsrc.concrete_hosts()] + list(others)):
         import hashlib
         clean += "-" + hashlib.sha1(alias.encode()).hexdigest()[:4]
     return "ssh-" + clean
@@ -95,6 +96,9 @@ class Hosts(TableApp):
         command for one from your history (ssh -p 2222 root@1.2.3.4 → -p 2222)."""
         return sshsrc.conn_args(self.extra.get(r["alias"])) if r["history"] else []
 
+    def aliases(self):
+        return [r["alias"] for r in self.all or []]
+
     def ssh_cmd(self, r):
         return " ".join(["ssh", *map(shlex.quote, self.args(r)), shlex.quote(r["alias"])])
 
@@ -104,7 +108,7 @@ class Hosts(TableApp):
         aliases = [a for a, _ in hosts]
         hist = sshsrc.history()
         # what history reached by hand: user@address of a configured host counts as that host
-        cfgs = self.bg.get(("reading", stamp, tuple(aliases)), lambda: self.resolve_all(aliases), 300) or {}
+        cfgs = self.bg.get_for(("reading",), (stamp, tuple(aliases)), lambda: self.resolve_all(aliases), 300) or {}
         by_address = {}
         for a in aliases:
             c = cfgs.get(a) or {}
@@ -124,8 +128,8 @@ class Hosts(TableApp):
             used[alias] = (n + 1, when if when and (last is None or when > last) else last)
         extra_list = sorted(extra)
         opts = {d: tuple(sshsrc.conn_args(self.extra.get(d))) for d in extra_list}
-        extra_cfgs = self.bg.get(("reading", "history", stamp, tuple(sorted(opts.items()))),
-                                 lambda: self.resolve_all(extra_list, opts), 300) or {}
+        extra_cfgs = self.bg.get_for(("reading", "history"), (stamp, tuple(sorted(opts.items()))),
+                                     lambda: self.resolve_all(extra_list, opts), 300) or {}
         cfgs = {**cfgs, **extra_cfgs}
         live = sshsrc.live()
         # who answers (every 30 s) · which account the git hosts see for your key (every hour)
@@ -134,7 +138,11 @@ class Hosts(TableApp):
             c = cfgs.get(d) or {}
             if c.get("hostname") and not (c.get("proxyjump", "none") != "none" or c.get("proxycommand", "none") != "none"):
                 targets[d] = (c["hostname"], c.get("port", "22"))
-        probes = self.bg.get(("checking", tuple(sorted(targets.items()))), lambda: self.probe_all(targets), PROBE_EVERY) or {}
+        # a new host is asked at once; hosts that went away do not make the others asked early
+        now_t = frozenset(targets.items())
+        seen = self.bg.inputs.get(("checking",), frozenset())
+        probes = self.bg.get_for(("checking",), seen | now_t, lambda: self.probe_all(targets), PROBE_EVERY,
+                                 again=not now_t <= seen) or {}
         # a key with a passphrase that the agent does not hold cannot be used without a terminal
         held, _ = sshsrc.agent_keys()
         by_path = {k["path"]: k for k in sshsrc.keys()}
@@ -142,21 +150,21 @@ class Hosts(TableApp):
         def locked(c):
             if c.get("usekeychain") == "yes":           # macOS: the passphrase is in the Keychain
                 return False
-            ks = [by_path.get(p) for p in sshsrc.key_files(c)]
+            ks = [by_path.get(p) or sshsrc.key_entry(p) for p in sshsrc.key_files(c)]
             return bool(ks) and all(k and k["encrypted"] and k["fingerprint"] not in held for k in ks)
         for d in [d for d, t in list(self.tests.items()) if time.time() - t[2] > TEST_KEEP]:
             self.tests.pop(d, None)                     # an old answer is not today's
         def asks_you(c):
             """A security key (touch it) or another agent (1Password, Bitwarden: approve it) would
             ask for you even in BatchMode: such hosts are only asked from the menu."""
-            ks = [by_path.get(p) for p in sshsrc.key_files(c)]
+            ks = [by_path.get(p) or sshsrc.key_entry(p) for p in sshsrc.key_files(c)]
             agent = os.path.expanduser(c.get("identityagent", "none"))
             default = ("none", "", "SSH_AUTH_SOCK", "$SSH_AUTH_SOCK", sshsrc.ssh_env().get("SSH_AUTH_SOCK", ""),
                        os.path.join(sshsrc.SSH_DIR, "agent.sock"))
             return any(k and k["type"].endswith("-SK") for k in ks) or agent not in default
         gits = [a for a in aliases if sshsrc.git_service(cfgs.get(a) or {}) and not locked(cfgs.get(a) or {})
                 and not asks_you(cfgs.get(a) or {})]
-        accounts = (self.bg.get(("asking", tuple(gits)), lambda: self.accounts(gits), ACCOUNT_EVERY) or {}) if gits else {}
+        accounts = (self.bg.get_for(("asking",), tuple(gits), lambda: self.accounts(gits), ACCOUNT_EVERY) or {}) if gits else {}
         rows = []
         for n, dest in enumerate(aliases + extra_list):
             c = cfgs.get(dest) or {}
@@ -260,7 +268,7 @@ class Hosts(TableApp):
         git = bool(r["service"])
         items = []
         if not git:
-            items += [(f"{ICON['connect']}  Connect (session {session_name(r['alias'])})", "o", lambda: self.connect(r)),
+            items += [(f"{ICON['connect']}  Connect (session {session_name(r['alias'], self.aliases())})", "o", lambda: self.connect(r)),
                       (f"{ICON['popup']}  Connect in a popup", "p", lambda: self.popup(
                           f"ssh {r['alias']} · exit closes", f"{self.ssh_cmd(r)}; [ $? -eq 255 ] && "
                           f"{{ printf '\\n  ssh could not connect · press Enter'; read -r _; }}", "95%", "90%", env=self.env())),
@@ -279,7 +287,7 @@ class Hosts(TableApp):
                                           "70%", "40%", env=self.env()))]
         block = None if r["history"] else next((b for a, b in sshsrc.concrete_hosts() if a == r["alias"]), None)
         items += [("", "", None),
-                  (f"{ICON['edit']}  Edit ~/.ssh/config" + (f" (line {block['line']})" if block else ""), "e",
+                  (f"{ICON['edit']}  Edit " + (f"{tilde(block['file'])}:{block['line']}" if block else "~/.ssh/config"), "e",
                    lambda: self.edit(block)),
                   (f"{ICON['add']}  Add a host…", "a", self.ask_add),
                   ("", "", None),
@@ -301,7 +309,7 @@ class Hosts(TableApp):
     def connect(self, r):
         """A session of its own, named after the host: connecting again goes back to it.
         When ssh itself fails (255: no answer, key refused…) the pane waits so you can read why."""
-        name = session_name(r["alias"])
+        name = session_name(r["alias"], self.aliases())
         if subprocess.run(["tmux", "has-session", "-t", f"={name}"], capture_output=True).returncode:
             cmd = (f"{self.ssh_cmd(r)}; [ $? -eq 255 ] && {{ printf '\\n  ssh could not connect · press Enter to close'; read -r _; }}")
             env = [a for k, v in self.env().items() for a in ("-e", f"{k}={v}")]

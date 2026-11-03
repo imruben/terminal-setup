@@ -90,7 +90,7 @@ uptime_read() {
 }
 # rx tx: bytes received / sent by $IFACE so far
 net_read() {
-  rx= tx=
+  rx='' tx=''
   if (( LINUX )); then
     local name r t
     while read -r name r _ _ _ _ _ _ _ t _; do
@@ -123,7 +123,7 @@ ping_once() { if (( LINUX )); then ping -c1 -W1 -n 1.1.1.1; else ping -c1 -t1 -n
 # bar <percent> <width>
 bar() {
   local p=$1 w=$2 fill col full="" empty="" n
-  (( fill = p * w / 100, fill > w ? fill = w : 0 ))
+  fill=$(( p * w / 100 )); (( fill > w )) && fill=$w
   col=$C_OK; (( p >= 70 )) && col=$C_WARN; (( p >= 90 )) && col=$C_BAD
   for (( n = 0; n < fill; n++ )); do full+="█"; done
   for (( n = fill; n < w; n++ )); do empty+="░"; done
@@ -175,7 +175,7 @@ trap ':' USR1                  # back in sight (tmux.conf hooks): look again rig
 VIEW='#{pane_width} #{pane_height} #{window_zoomed_flag} #{&&:#{&&:#{window_active},#{session_attached}},#{||:#{?window_zoomed_flag,0,1},#{pane_active}}}'
 first=1 round=0
 while :; do
-  cols= rows= zoomed=0 visible=1
+  cols='' rows='' zoomed=0 visible=1
   [[ -n $TMUX_PANE ]] && read -r cols rows zoomed visible < <(tmux display -p -t "$TMUX_PANE" "$VIEW" 2>/dev/null)
   if [[ $visible == 0 ]]; then
     sleep 10 & wait $!; kill $! 2>/dev/null     # out of sight: a look every 10 s, or SIGUSR1

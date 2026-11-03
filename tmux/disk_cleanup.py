@@ -81,9 +81,10 @@ class Cleanup(TableApp):
             first = self.changed_seen is UNSET
             self.changed_seen = stamp
             seq, _ = disksrc.read_changed(stamp)
-            missed = seq is not None and self.last_seq is not None and seq != self.last_seq + 1
+            mine = stamp in self.my_stamps            # this pane's own clean: in order, measured already
+            missed = not mine and seq is not None and self.last_seq is not None and seq != self.last_seq + 1
             self.last_seq = seq                   # a bare time (a popup) starts the count again
-            if not first and stamp and (missed or stamp not in self.my_stamps):
+            if not first and stamp and not mine:
                 self.measure_changed("" if missed else stamp)     # missed some (out of sight): all of them
 
     def measure_changed(self, stamp):
@@ -164,7 +165,6 @@ class Cleanup(TableApp):
                 self.flash(f"{it.label}: {(out.strip().splitlines() or ['failed'])[-1][:100]}", ok=False)
             stamp = disksrc.say_changed(it.path or "")
             self.my_stamps.add(stamp)                 # this pane measured it already
-            self.last_seq = disksrc.read_changed(stamp)[0]
         self.background(r, "cleaning", ["sh", "-c", cmd], done, timeout=None)
 
     def ask_run_clean(self):

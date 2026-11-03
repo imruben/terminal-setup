@@ -22,7 +22,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import tmuxlink
 from tui import (BLUE, BOLD, CLEAR_EOL, CRUST, DANGER_BG, DIM, GREEN, ACCENT, RED, RESET, SUB, SURFACE,
-                 TEXT, YELLOW, Menu, Screen, cut, ellipsis, highlight, vlen)
+                 TEXT, YELLOW, Menu, Screen, cut, ellipsis, highlight, pad, vlen)
 
 ICON_TERM, ICON_SEARCH, ICON_NEW = "\U000F018D", "\U000F0349", "\U000F0415"
 ICON_EDIT, ICON_CLOSE, ICON_FOLDER, ICON_OPEN = "\U000F03EB", "\U000F0156", "\U000F024B", "\U000F0599"
@@ -203,7 +203,7 @@ class Picker:
         _, name, wins, attached, path, desc = r
         if self.mode == "kill" and name == self.target:
             what = "will be rebuilt" if name == MONITOR else "will be closed"
-            return DANGER_BG + CRUST + cut(f" {ICON_CLOSE} {name}  {what}", width).ljust(width) + RESET
+            return DANGER_BG + CRUST + pad(cut(f" {ICON_CLOSE} {name}  {what}", width), width) + RESET
         if name == self.here:
             mark = f"{ACCENT}▶"
         elif name == MONITOR:
@@ -217,7 +217,7 @@ class Picker:
             info = f"{TEXT}{desc}{RESET}{DIM} · {info}"
         start = f" {YELLOW}{ICON_START}{RESET}" if name == self.start else ""
         extra = 2 if start else 0
-        name_w = min(len(name), max(4, width - 6 - extra))
+        name_w = min(vlen(name), max(4, width - 6 - extra))      # screen cells: 日本語 and emoji take 2
         body = (f" {mark}{RESET} {TEXT}{BOLD}{ellipsis(name, name_w)}{RESET}{start}  "
                 f"{DIM}{ellipsis(info, max(0, width - name_w - 6 - extra))}")
         return highlight(body, width) if hot else body

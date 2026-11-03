@@ -119,6 +119,7 @@ if [ "$UPDATE" = 1 ]; then
 fi
 
 # a running tmux picks up the new config
+# shellcheck disable=SC2033  # tmux's own info command, not our info()
 if [ "$DRY_RUN" = 0 ] && tmux info >/dev/null 2>&1; then
   tmux source-file "$HOME/.tmux.conf" >/dev/null 2>&1 && ok "the running tmux reloaded its config"
   # its monitor still runs the code it started with (or, after a migration, the scripts where

@@ -184,7 +184,7 @@ class Logs(Viewer):
             self.full, self.loading = None, False
             self.counts = collections.Counter()
             self.last_stamp, self.asleep, self.hidden_at = None, False, None
-        self.no_logs, self.new_lines, self.started_at = "", 0, None
+        self.no_logs, self.new_lines, self.started_at, self.no_docker = "", 0, None, False
         if not name:
             return
         self.follow_from(["--tail", str(TAIL)])
@@ -206,9 +206,13 @@ class Logs(Viewer):
         threading.Thread(target=check, daemon=True).start()
 
     def follow_from(self, where):
-        self.proc = subprocess.Popen(["docker", "logs", "-f", "--timestamps", *where, self.key],
-                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                     preexec_fn=die_with_parent)
+        try:
+            self.proc = subprocess.Popen(["docker", "logs", "-f", "--timestamps", *where, self.key],
+                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                         preexec_fn=die_with_parent)
+        except OSError:                              # no docker any more (Docker Desktop quit on WSL)
+            self.proc, self.no_docker = None, True
+            return
         threading.Thread(target=self.follow, args=(self.proc, self.gen, self.last_stamp), daemon=True).start()
 
     def stop_follow(self):
@@ -415,7 +419,7 @@ class Logs(Viewer):
 
     def tick(self):
         self.poll()
-        if not self.visible:
+        if not self.visible or self.menu:            # a menu is open: its rows stay the ones it was opened on
             return
         # paused (scrolled up): what you read stays where it is · new lines wait for End
         if self.pending:
@@ -433,7 +437,8 @@ class Logs(Viewer):
 
     def draw(self):
         width = self.screen.size()[1]
-        if (self.dirty and self.following) or width != getattr(self, "_built_w", None):
+        self.clear_span = None                       # status() sets it again when the ✕ is drawn
+        if (not self.menu and self.dirty and self.following) or width != getattr(self, "_built_w", None):
             self._built_w = width
             self.rebuild()
         # tab labels carry their counts once the whole log has been read
@@ -449,6 +454,8 @@ class Logs(Viewer):
             return f"{YELLOW}{label} {RESET}{TEXT}{text}{RESET}{YELLOW}▏{RESET} {DIM}enter · esc cancels"
         if not self.key:
             return ""
+        if getattr(self, "no_docker", False):
+            return f"{YELLOW}the docker command is not there (Docker stopped?): pick the container again once it is back"
         if self.no_logs:
             return f"{YELLOW}this container logs to {self.no_logs}: docker logs cannot read it"
         rng = next((l for l, v in RANGES if v == self.since), "")

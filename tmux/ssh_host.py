@@ -75,7 +75,7 @@ class Host(BackgroundViewer):
         by_path = {key["path"]: key for key in sshsrc.keys()}
         shown = 0
         for p in sshsrc.key_files(c):              # %h %r… expanded, only the ones that exist
-            key = by_path.get(p)
+            key = by_path.get(p) or sshsrc.key_entry(p)
             if key:
                 state = (f"{GREEN}in the agent" if key["fingerprint"] in held else
                          f"{YELLOW}passphrase, not in the agent" if key["encrypted"] else f"{DIM}no passphrase")
@@ -143,6 +143,8 @@ class Host(BackgroundViewer):
                     "before any Host line (applies to every host)" if b["kind"] == "top" else
                     "Match: applies when ssh decides it does" if b["kind"] == "match" else
                     f"Host {' '.join(b['patterns'])}")
+            if b["kind"] != "top" and b.get("within"):
+                what += f" · inside {sshsrc.within_text(b)}"
             out += [f"  {BOLD}{BLUE}{tilde(b['file'])}:{b['line']}{RESET}  {DIM}{what}", ""]
             out += self.colour("\n".join(text), b["line"], width)
             out.append("")

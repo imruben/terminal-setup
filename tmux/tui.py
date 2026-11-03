@@ -224,33 +224,38 @@ class Menu:
         sys.stdout.flush()
 
     def render(self):
-        """The menu as text to write over the screen (with it, in one write: no flicker)."""
+        """The menu as text to write over the screen."""
+        return "".join(f"\x1b[{y};{self.x}H{seg}" for y, seg in self.rows_text().items())
+
+    def rows_text(self):
+        """{screen row: the menu's part of it} · Screen.paint puts each one on its row, so a row
+        is never on screen without its piece of the menu (no flicker)."""
         border = ACCENT
         t = f" {ellipsis(self.title, self.inner - 2)} "
         left = (self.inner - vlen(t)) // 2
         right = "─" * (self.inner - left - vlen(t))
         if self.more_above():
             right = right[:-4] + f"{RESET}{TEXT} ▲ {RESET}{border}─" if len(right) >= 5 else right
-        out = [f"\x1b[{self.y};{self.x}H{border}╭{'─' * left}{BOLD}{t}{RESET}{border}{right}╮"]
+        out = {self.y: f"{border}╭{'─' * left}{BOLD}{t}{RESET}{border}{right}╮{RESET}"}
         for row in range(self.rows):
             n = self.off + row
             label, key, action = self.items[n]
-            pos = f"\x1b[{self.y + 1 + row};{self.x}H"
+            y = self.y + 1 + row
             if not label:
-                out.append(pos + f"{border}├{'─' * self.inner}┤")
+                out[y] = f"{border}├{'─' * self.inner}┤{RESET}"
                 continue
             keytxt = f"({key})" if key else ""
             room = self.inner - len(keytxt) - 1
             text = pad(ellipsis(f" {label}", room), room) + keytxt + " "
             style = SELECTED if n == self.cur else (TEXT if action else DIM)
-            out.append(pos + f"{border}│{RESET}{style}{text}{RESET}{border}│")
+            out[y] = f"{border}│{RESET}{style}{text}{RESET}{border}│{RESET}"
         bottom = "─" * self.inner
         if self.more_below():
             more = f" ▼ {len(self.items) - self.off - self.rows} more "
             if len(more) + 2 <= self.inner:
                 bottom = f"{'─' * (self.inner - len(more) - 1)}{RESET}{TEXT}{more}{RESET}{border}─"
-        out.append(f"\x1b[{self.y + self.h - 1};{self.x}H{border}╰{bottom}╯{RESET}")
-        return "".join(out)
+        out[self.y + self.h - 1] = f"{border}╰{bottom}╯{RESET}"
+        return out
 
     def on_mouse(self, b, x, y, released):
         """Returns ('pick', action) · ('close',) · None."""
@@ -312,6 +317,9 @@ class Menu:
 
 
 # ─── terminal ───
+_painted = {}          # the rows on screen now and its size (Screen.paint writes only what changed)
+
+
 class Screen:
     """Alternate screen, raw input, mouse with hover. Use as a context manager."""
 
@@ -321,6 +329,7 @@ class Screen:
         tty.setraw(self.fd)
         # no autowrap: a line that is wider than measured is cut by the terminal, it never wraps
         # and scrolls the title row away · bracketed paste: pasted text is text, not keys
+        Screen.repaint()
         sys.stdout.write("\x1b[?1049h\x1b[?25l\x1b[?1003h\x1b[?1006h\x1b[?7l\x1b[?2004h")
         sys.stdout.flush()
         # resize (SIGWINCH) and "your tab is in sight again" (SIGUSR1, see tmuxlink.note_wake):
@@ -344,6 +353,7 @@ class Screen:
     def restore(self):
         if self.saved is None:
             return
+        Screen.repaint()
         sys.stdout.write("\x1b[?2004l\x1b[?7h\x1b[?1003l\x1b[?1006l\x1b[?25h\x1b[?1049l")
         sys.stdout.flush()
         termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
@@ -358,11 +368,32 @@ class Screen:
     def paint(lines, over=None):
         """lines: one string per screen row (already cut to width) · never more rows than the
         pane has: one more would scroll the title row away (and mouse rows with it) · over: a
-        menu drawn on top, in the same write (two writes would show the screen without it)."""
-        lines = lines[:max(1, Screen.size()[0])]
-        sys.stdout.write("\x1b[H" + "\r\n".join(l + RESET + CLEAR_EOL for l in lines) + "\x1b[J"
-                         + (over.render() if over else ""))
-        sys.stdout.flush()
+        menu drawn on top. Only the rows that changed since the last paint are written, each
+        with its piece of the menu: a redraw (a tick, the pointer moving over the menu) never
+        shows a row without the menu, and an unchanged screen writes nothing."""
+        rows, cols = Screen.size()
+        lines = lines[:max(1, rows)]
+        extra = over.rows_text() if over else {}
+        x = over.x if over else 1
+        frame = {n: l + RESET + CLEAR_EOL for n, l in enumerate(lines, 1)}
+        for n, seg in extra.items():                 # the menu's piece goes with its row
+            if 1 <= n <= rows:
+                frame[n] = frame.get(n, "\x1b[2K") + f"\x1b[{n};{x}H{seg}"
+        last = _painted.get("frame") if _painted.get("size") == (rows, cols) else None
+        if last is None:
+            out = "\x1b[H\x1b[J" + "".join(f"\x1b[{n};1H{f}" for n, f in sorted(frame.items()))
+        else:
+            out = "".join(f"\x1b[{n};1H{f}" for n, f in sorted(frame.items()) if last.get(n) != f)
+            out += "".join(f"\x1b[{n};1H\x1b[2K" for n in sorted(last) if n not in frame)
+        _painted.update(size=(rows, cols), frame=frame)
+        if out:
+            sys.stdout.write(out)
+            sys.stdout.flush()
+
+    @staticmethod
+    def repaint():
+        """The next paint writes every row (the screen was changed behind its back)."""
+        _painted.clear()
 
     def events(self, tick=None):
         """Yield ('resize',) · ('wake',) · ('mouse', button, x, y, released) · ('key', name) ·
@@ -407,7 +438,7 @@ class Screen:
             start = data.rfind(b"\x1b[200~")
             if start >= 0 and data.find(b"\x1b[201~", start) < 0 and len(data) - start < 1 << 20:
                 self.carry, data = data[start:] + self.carry, data[:start]
-            yield from parse(data)
+            yield from coalesce(parse(data))
 
 
 MOUSE = re.compile(rb"\x1b\[<(\d+);(\d+);(\d+)([Mm])")
@@ -434,6 +465,22 @@ def cut_off(data):
     if k >= 0 and data[k] >= 0xC0 and cont + 1 < (2 if data[k] < 0xE0 else 3 if data[k] < 0xF0 else 4):
         return k
     return None
+
+
+def coalesce(events):
+    """A run of pointer moves read at once (a fast move sends dozens) counts as its last one:
+    one redraw, not one per cell crossed."""
+    held = None
+    for ev in events:
+        if ev[0] == "mouse" and ev[1] & 32 and not ev[4]:
+            held = ev
+            continue
+        if held:
+            yield held
+            held = None
+        yield ev
+    if held:
+        yield held
 
 
 PASTE = re.compile(rb"\x1b\[200~(.*?)(?:\x1b\[201~|$)", re.S)

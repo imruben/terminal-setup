@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # ═══════════════════════════════════════════════════════════════
 #  terminal-setup · the Nerd Font ("JetBrainsMono Nerd Font"): the icons of the
 #  prompt, the tmux bar and the panels are drawn with it. It must be installed
@@ -8,14 +9,15 @@
 #    server over SSH  on the computer you connect from: nothing to do here
 # ═══════════════════════════════════════════════════════════════
 
-font_present_linux() { fc-list 2>/dev/null | grep -qi "JetBrainsMono Nerd Font"; }
+# (no `… | grep -q`: under install.sh's pipefail the writer's SIGPIPE would count as "missing")
+font_present_linux() { grep -qi "JetBrainsMono Nerd Font" <<< "$(fc-list 2>/dev/null)"; }
 # the Homebrew cask puts the .ttf files in ~/Library/Fonts
-font_present_macos() { ls ~/Library/Fonts /Library/Fonts 2>/dev/null | grep -qi "JetBrainsMonoNerdFont"; }
+font_present_macos() { grep -qi "JetBrainsMonoNerdFont" <<< "$(printf '%s\n' ~/Library/Fonts/* /Library/Fonts/*)"; }
 
 font_present_windows() {
   local d
   for d in /mnt/c/Windows/Fonts /mnt/c/Users/*/AppData/Local/Microsoft/Windows/Fonts; do
-    ls "$d" 2>/dev/null | grep -qi "JetBrainsMonoNerdFont" && return 0
+    grep -qi "JetBrainsMonoNerdFont" <<< "$(printf '%s\n' "$d"/*)" && return 0
   done
   return 1
 }

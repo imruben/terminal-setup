@@ -272,8 +272,10 @@ class Ports(TableApp):
             self.flash(f"could not start {tmuxlink.BROWSER}", ok=False)
 
     def copy(self, text):
-        tmux("set-buffer", "-w", "--", text)
-        self.flash(f"copied: {text}")
+        if tmuxlink.copy(text):                     # stdin (no size limit) · pbcopy on macOS too
+            self.flash(f"copied: {text[:60]}")
+        else:
+            self.flash("could not copy: tmux refused it", ok=False)
 
     def show_proc(self, r):
         tmux("set", "-g", "@procs-query", f"pid={r['pid']}")

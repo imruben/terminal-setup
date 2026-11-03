@@ -78,6 +78,9 @@ def shown(name):
 UNSET = object()
 
 
+RELIST = 5            # seconds a folder's listing (sizes, times) is kept while its mtime stays
+
+
 class Folders(TableApp):
     icon = "\U000F02CA"
     title = "Folders"
@@ -88,14 +91,14 @@ class Folders(TableApp):
     search_keys = ("name",)
     columns = [Column("name_txt", "NAME", sort="name", min=12),
                Column("size", "SIZE", 7, "r", desc=True, fmt=human),
-               Column("share", "SHARE", 16, sort="frac", desc=True, min=10),
+               Column("share", "SHARE", 16, sort="frac", desc=True, min=15),     # bar + "100%"
                Column("mtime_txt", "MODIFIED", 8, "r", sort="mtime", desc=True, optional=True)]
     watch = ("@disk-go", "@disk-changed")
 
     def __init__(self, screen):
         self.path = disksrc.HOME
         self.measures = []          # newest first: the folders measured so far (each with its sizes)
-        self.listing = {}           # folder → (its mtime, entries)
+        self.listing = {}           # folder → (its mtime, when read, entries)
         self.changed_seen = UNSET   # the first look only notes the value
         self.my_stamp = None        # the @disk-changed this pane wrote (its own deletes need no re-measure)
         self.deleted = []           # (row, ok, output) of deletes that finished: handled on the UI thread
@@ -158,8 +161,10 @@ class Folders(TableApp):
         except OSError:
             return None
         cached = self.listing.get(path)
-        if cached and cached[0] == mt:
-            return cached[1]
+        # a file that grows (a download, a log) leaves its folder's mtime as it is: read again
+        # every few seconds anyway (not every reload: slow on /mnt/c)
+        if cached and cached[0] == mt and time.monotonic() - cached[1] < RELIST:
+            return cached[2]
         out = []
         try:
             with os.scandir(path) as it:
@@ -173,7 +178,7 @@ class Folders(TableApp):
             return None
         if len(self.listing) > 50:
             self.listing.clear()
-        self.listing[path] = (mt, out)
+        self.listing[path] = (mt, time.monotonic(), out)
         return out
 
     def fetch(self):
@@ -309,7 +314,12 @@ class Folders(TableApp):
         if stamp != self.changed_seen:
             first = self.changed_seen is UNSET
             self.changed_seen = stamp
-            if not first and stamp and stamp != self.my_stamp:   # cleaned elsewhere: measure again
+            _, where = disksrc.read_changed(stamp)
+            where = os.path.realpath(where) if where else ""
+            here = os.path.realpath(self.path)
+            near = not where or where == here or where.startswith(here.rstrip("/") + "/") \
+                or here.startswith(where.rstrip("/") + "/")
+            if not first and stamp and stamp != self.my_stamp and near:   # changed elsewhere, here: measure again
                 self.listing.clear()
                 self.ensure_measured(self.path, again=True)
 

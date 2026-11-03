@@ -477,7 +477,8 @@ class TableApp:
         size = self.screen.size()
         same = size == getattr(self, "_last_size", None)
         self._last_size = size
-        if same and self.visible:
+        # a real resize too: an answer that arrived with it (the two pokes merge) is read now
+        if self.visible:
             if self.frozen:
                 self._dirty = True
             else:

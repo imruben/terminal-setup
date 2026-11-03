@@ -1,3 +1,4 @@
+# shellcheck shell=bash disable=SC2034  # its variables are read by the scripts that source it
 # ═══════════════════════════════════════════════════════════════
 #  terminal-setup · versions of what install.sh fetches itself (when the system's
 #  package is missing or too old) and the minimums the setup needs

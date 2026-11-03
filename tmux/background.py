@@ -25,6 +25,7 @@ class Background:
         self.gen = {}                            # key → bumped by forget(): answers from before are stale
         self.ttl = {}
         self.dropped = set()                     # keys dropped while asked: their answer is not kept
+        self.inputs = {}                         # key → what get_for() was last asked with
         self.lock = threading.Lock()
 
     def get(self, key, fn, ttl):
@@ -59,6 +60,17 @@ class Background:
             self.on_ready()
         threading.Thread(target=work, daemon=True).start()
         return value
+
+    def get_for(self, key, inputs, fn, ttl, again=True):
+        """get() for answers that depend on inputs (the hosts of ~/.ssh/config…), under one key:
+        when the inputs change the last answer stays on screen until the new one comes (a new key
+        would show nothing meanwhile) · again=False: a change waits for the ttl as usual."""
+        with self.lock:
+            old = self.inputs.get(key, inputs)
+            self.inputs[key] = inputs
+        if again and old != inputs:
+            self.forget(key)
+        return self.get(key, fn, ttl)
 
     def peek(self, key):
         """The last answer for key, without asking again."""

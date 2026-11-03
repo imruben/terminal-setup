@@ -26,7 +26,8 @@
 #  session-closed hook recreates it; it is left out of tmux-resurrect saves.
 # ═══════════════════════════════════════════════════════════════
 
-export TERMINAL_SETUP=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)   # the repo (this file is in its tmux/)
+TERMINAL_SETUP=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)   # the repo (this file is in its tmux/)
+export TERMINAL_SETUP
 S=system
 D=$TERMINAL_SETUP/tmux/system
 KEEP="$D/keep.sh"
@@ -42,7 +43,7 @@ run_dir=${XDG_RUNTIME_DIR:-/tmp}; [[ -d $run_dir && -w $run_dir ]] || run_dir=/t
 LOCK=$run_dir/tmux-system-$UID-$key.lock
 
 build() {
-  local py="python3 -I $TERMINAL_SETUP/tmux" sh="${SHELL:-zsh}"
+  local py="python3 -I $TERMINAL_SETUP/tmux"
   local info res btop procs ports folders disks clean pkgs updates search pkg hosts hostd keys cont det logs repos repo
   # 1 · info: fastfetch with Resources below it · btop on the right
   tmux ${NOSTART:+-N} new-session -d -s $S -n info -x 200 -y 50 -c "$HOME" "$KEEP $D/info.sh" || return

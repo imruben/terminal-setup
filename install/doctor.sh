@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2088  # "~/…" in messages is text to show, not a path
 # ═══════════════════════════════════════════════════════════════
 #  terminal-setup · check that everything is in place (run by install.sh, or alone:
 #  bash install/doctor.sh). ✔ fine · ✘ needed and missing / too old · – optional
@@ -80,7 +81,7 @@ for f in $(links_into_repo); do
 done
 
 printf '\n  %sPlugins%s\n' "$B" "$R"
-while read -r name url commit; do
+while read -r name _; do
   case $name in tmux/*) dir=$HOME/.tmux/plugins/${name#tmux/} ;; zsh/*) dir=$HOME/.zsh/plugins/${name#zsh/} ;; esac
   if [ -d "$dir/.git" ]; then ok "${name#*/}"; else fail "${name#*/} is missing (run ./install.sh)"; problems=$((problems + 1)); fi
 done < <(grep -v '^#' "$REPO/install/plugins.lock")

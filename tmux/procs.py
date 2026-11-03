@@ -17,6 +17,7 @@ import time
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import tmuxlink
 from table import Column, TableApp, run
 from tui import DIM, SUB, TEXT, YELLOW
 
@@ -225,8 +226,10 @@ class Procs(TableApp):
         self.reload()
 
     def copy(self, text):
-        tmux("set-buffer", "-w", "--", text)
-        self.flash(f"copied: {text[:60]}")
+        if tmuxlink.copy(text):                     # stdin (no size limit) · pbcopy on macOS too
+            self.flash(f"copied: {text[:60]}")
+        else:
+            self.flash("could not copy: tmux refused it", ok=False)
 
     def show_ports(self, r):
         tmux("set", "-g", "@ports-query", f"pid={r['pid']}")

@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+# shellcheck disable=SC2088  # "~/…" in messages is text to show, not a path
 # ═══════════════════════════════════════════════════════════════
 #  terminal-setup · your config files. Nothing is replaced and nothing is linked:
 #    ~/.zshrc       gets, at its end:  source "<repo>/zsh/zshrc"

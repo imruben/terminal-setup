@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2088  # "~/…" in messages is text to show, not a path
 # ═══════════════════════════════════════════════════════════════
 #  terminal-setup · every file the install put on this machine, and what it is for
 #    bash install/files.sh      (also: make files)
@@ -73,7 +74,7 @@ plugin_why() {
     *)                echo "" ;;
   esac
 }
-while read -r name url commit; do
+while read -r name _; do
   case $name in
     tmux/*) dir=$HOME/.tmux/plugins/${name#tmux/} ;;
     zsh/*)  dir=$HOME/.zsh/plugins/${name#zsh/} ;;
@@ -132,7 +133,7 @@ else
   . "$REPO/install/apt.sh"
   for p in $APT_PACKAGES $APT_DESKTOP tmux fzf fastfetch starship lazygit yq; do
     v=$(dpkg-query -W -f='${Status}\t${Version}' "$p" 2>/dev/null | awk -F'\t' '$1 ~ / installed$/ {print $2}')
-    case $p in git-delta) bin=delta ;; ripgrep) bin=rg ;; fd-find) bin=fd ;; tealdeer) bin=tldr ;; *) bin=$p ;; esac
+    case $p in git-delta) bin='delta' ;; ripgrep) bin=rg ;; fd-find) bin=fd ;; tealdeer) bin=tldr ;; *) bin=$p ;; esac
     if [ -n "$v" ]; then
       printf '    %s✔%s %-30s %s %s(%s)%s\n' "$GREEN" "$R" "apt $p" "$(pkg_why "$p")" "$D" "$v" "$R"
     elif have "$bin"; then                    # not from apt: say where it is

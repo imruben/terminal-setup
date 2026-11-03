@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2088  # "~/…" in messages is text to show, not a path
 # ═══════════════════════════════════════════════════════════════
 #  terminal-setup · undo the install
 #    ./uninstall.sh         takes the terminal-setup lines out of ~/.zshrc, ~/.tmux.conf and ~/.zshenv
@@ -75,6 +76,7 @@ if [ -n "$links" ]; then
   fi
 fi
 
+# shellcheck disable=SC2033  # tmux's own info command, not our info()
 tmux info >/dev/null 2>&1 && [ -f "$HOME/.tmux.conf" ] && tmux source-file "$HOME/.tmux.conf" >/dev/null 2>&1 || true
 [ -d "$BACKUP_DIR" ] && printf '\n    A copy of your files as they were: %s\n' "$(tilde "$BACKUP_DIR")"
 printf '\n    Done. Open a new terminal (a running tmux keeps the old key bindings until it restarts).\n\n'
