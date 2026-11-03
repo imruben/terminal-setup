@@ -139,7 +139,8 @@ class Host(BackgroundViewer):
             text = sshsrc.block_text(b)
             if not text:
                 continue
-            what = ("before any Host line (applies to every host)" if b["kind"] == "top" else
+            what = (f"Included inside {sshsrc.within_text(b)}" if b["kind"] == "top" and b.get("within") else
+                    "before any Host line (applies to every host)" if b["kind"] == "top" else
                     "Match: applies when ssh decides it does" if b["kind"] == "match" else
                     f"Host {' '.join(b['patterns'])}")
             out += [f"  {BOLD}{BLUE}{tilde(b['file'])}:{b['line']}{RESET}  {DIM}{what}", ""]

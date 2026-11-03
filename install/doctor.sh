@@ -44,10 +44,18 @@ need jq
 need entr "" "entr -h 2>&1 | head -1; echo 0"
 need ansifilter
 need delta
+need rg
+need fd
+need zoxide
+need lazygit "" "lazygit --version | sed 's/.*version=//'"
+need tldr
+need shellcheck
+if have yq && ! yq --version 2>&1 | grep -q mikefarah; then
+  fail "yq is $(command -v yq), not mikefarah/yq (run ./install.sh)"; problems=$((problems + 1))
+else need yq; fi
 optional docker "the docker tab, Docker in the disk tab's Cleanup"
 optional ssh "the ssh tab"
-optional lazygit "lazygit from the git tab"
-optional tig "tig from the git tab"
+optional tig "tig from the git tab (lazygit is the default)"
 optional gh "GitHub from the shell"
 [ "$OS" = macos ] || optional snap "snap packages in the packages tab"
 optional brew "Homebrew packages in the packages tab"

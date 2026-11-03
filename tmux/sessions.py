@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -189,9 +190,7 @@ class Picker:
                        + (preview[n] if n < len(preview) else ""))
             lines.append(cut(row, w))
         lines.append(cut(self.footer(TOP + self.list_h), w))
-        self.screen.paint(lines)
-        if self.menu:
-            self.menu.draw()
+        self.screen.paint(lines, self.menu)
 
     def row(self, i, width):
         r, hot = self.rows[i], i == self.cur
@@ -245,17 +244,30 @@ class Picker:
         elif name == MONITOR and not any(s[0] == self.start for s in self.sessions):
             out.append(f"{YELLOW}{ICON_START}  new terminals open «{self.start}»{DIM} · not running now: "
                        f"the next terminal creates it · ctrl-s here: the monitor again")
-        for l in tmux("list-windows", "-t", f"={name}",
-                      "-F", "#{?window_active,▶,·}\t#I\t#W\t#{window_panes}").stdout.splitlines():
+        wins, cap = self.peek(name)
+        for l in wins:
             act, idx, wname, panes = l.split("\t")
             out.append(f"{ACCENT if act == '▶' else DIM}{act}{RESET} {SUB}{idx} {TEXT}{wname}{RESET} "
                        f"{DIM}({panes} pane{'s' if panes != '1' else ''})")
         out.append(DIM + "─" * max(0, width - 1))
-        cap = tmux("capture-pane", "-ep", "-t", f"={name}:").stdout.rstrip("\n").split("\n")
-        while cap and not cap[-1].strip():
-            cap.pop()
         out += cap[-max(0, rows - len(out)):] if rows > len(out) else []
         return [cut(l, width) for l in out[:rows]]
+
+    def peek(self, name):
+        """(its windows, what its active pane shows) · asked at most every 0.5 s per session: the
+        preview is drawn on every mouse move, two tmux calls each time otherwise."""
+        cache = self.__dict__.setdefault("_peek", {})
+        at, value = cache.get(name, (0.0, None))
+        if value is None or time.monotonic() - at > 0.5:
+            wins = [l for l in tmux("list-windows", "-t", f"={name}",
+                                    "-F", "#{?window_active,▶,·}\t#I\t#W\t#{window_panes}").stdout.splitlines()
+                    if l.count("\t") == 3]
+            cap = tmux("capture-pane", "-ep", "-t", f"={name}:").stdout.rstrip("\n").split("\n")
+            while cap and not cap[-1].strip():
+                cap.pop()
+            value = (wins, cap)
+            cache[name] = (time.monotonic(), value)
+        return value
 
     def footer(self, y):
         if self.mode == "kill":

@@ -44,9 +44,11 @@ files: ## every file the install put on this machine, and what it is for
 monitor: ## rebuild the system monitor (tmux session `system`)
 	tmux/system.sh restart
 
-check: ## syntax of every script (bash, zsh, python) · for changes to the repo
+check: ## syntax of every script (bash, zsh, python) and shellcheck · for changes to the repo
 	@for f in install.sh uninstall.sh install/*.sh tmux/system.sh tmux/system/*.sh; do bash -n "$$f" || exit 1; done
 	@for f in zsh/zshrc zsh/*.zsh zsh/platform/*.zsh tmux/*.zsh; do zsh -n "$$f" || exit 1; done
 	@python3 -c 'import ast, sys; [ast.parse(open(f).read(), f) for f in sys.argv[1:]]' tmux/*.py
+	@if command -v shellcheck >/dev/null; then shellcheck -S warning -x install.sh uninstall.sh install/*.sh tmux/system.sh tmux/system/*.sh || exit 1; \
+	  else echo "– shellcheck is not installed: bash scripts only parsed"; fi
 	@git diff --check
 	@echo "✔ every script parses"

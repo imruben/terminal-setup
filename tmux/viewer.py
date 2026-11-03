@@ -177,9 +177,7 @@ class Viewer:
             if bar:
                 line += RESET + "\x1b[K" + f"\x1b[{w}G" + (THUMB + "█" if ty <= n < ty + th else TRACK + "│")
             lines.append(line)
-        self.screen.paint(lines)
-        if self.menu:
-            self.menu.draw()
+        self.screen.paint(lines, self.menu)
 
     @staticmethod
     def short_tab(label):

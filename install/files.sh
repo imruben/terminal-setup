@@ -115,6 +115,10 @@ pkg_why() {
     ncurses) echo "tmux-256color description" ;; coreutils) echo "gdircolors, gnumfmt" ;;
     flock) echo "the system monitor's lock" ;;   bash) echo "bash ≥ 4.2 for tmux-autoreload" ;;
     font-jetbrains-mono-nerd-font) echo "the Nerd Font" ;;
+    ripgrep) echo "rg: search inside files" ;;   fd-find|fd) echo "fd: find files by name · Ctrl+t" ;;
+    zoxide) echo "z: cd that learns your folders" ;; lazygit) echo "git in the terminal (git tab too)" ;;
+    tealdeer) echo "tldr: short examples of any command" ;;
+    shellcheck) echo "finds bugs in shell scripts (micro, make check)" ;; yq) echo "jq for YAML (mikefarah/yq)" ;;
     *) echo "" ;;
   esac
 }
@@ -126,9 +130,9 @@ if [ "$OS" = macos ]; then
   done
 else
   . "$REPO/install/apt.sh"
-  for p in $APT_PACKAGES $APT_DESKTOP tmux fzf fastfetch starship; do
+  for p in $APT_PACKAGES $APT_DESKTOP tmux fzf fastfetch starship lazygit yq; do
     v=$(dpkg-query -W -f='${Status}\t${Version}' "$p" 2>/dev/null | awk -F'\t' '$1 ~ / installed$/ {print $2}')
-    bin=$p; [ "$p" = git-delta ] && bin=delta
+    case $p in git-delta) bin=delta ;; ripgrep) bin=rg ;; fd-find) bin=fd ;; tealdeer) bin=tldr ;; *) bin=$p ;; esac
     if [ -n "$v" ]; then
       printf '    %s✔%s %-30s %s %s(%s)%s\n' "$GREEN" "$R" "apt $p" "$(pkg_why "$p")" "$D" "$v" "$R"
     elif have "$bin"; then                    # not from apt: say where it is

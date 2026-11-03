@@ -240,12 +240,15 @@ class Apt:
         return found
 
     def mark_installed(self, rows):
-        if rows:
-            st = run_text("dpkg-query", "-W", "-f", "${Package}\t${Status}\t${Version}\n", *[r["name"] for r in rows])
-            inst = {p[0]: p[2] for p in (l.split("\t") for l in st.splitlines())
-                    if len(p) == 3 and p[1].endswith(" installed")}
-            for r in rows:
-                r["installed"] = inst.get(r["name"], "")
+        """Which rows are installed · asked 2000 names at a time (a search for 'lib' finds ~20 000)."""
+        inst = {}
+        names = [r["name"] for r in rows]
+        for i in range(0, len(names), 2000):
+            st = run_text("dpkg-query", "-W", "-f", "${Package}\t${Status}\t${Version}\n", *names[i:i + 2000])
+            inst.update({p[0]: p[2] for p in (l.split("\t") for l in st.splitlines())
+                         if len(p) == 3 and p[1].endswith(" installed")})
+        for r in rows:
+            r["installed"] = inst.get(r["name"], "")
 
     def info(self, name, width, note):
         policy = run_text("apt-cache", "policy", name)

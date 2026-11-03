@@ -24,6 +24,7 @@ class Background:
         self.data, self.busy, self.on_ready, self.fallback = {}, set(), on_ready, fallback
         self.gen = {}                            # key → bumped by forget(): answers from before are stale
         self.ttl = {}
+        self.dropped = set()                     # keys dropped while asked: their answer is not kept
         self.lock = threading.Lock()
 
     def get(self, key, fn, ttl):
@@ -42,6 +43,12 @@ class Background:
             except Exception:                    # a source failing must not take the pane down
                 result, failed = self.fallback(), True
             with self.lock:
+                self.busy.discard(key)
+                if key in self.dropped:              # dropped meanwhile: nobody wants it any more
+                    self.dropped.discard(key)
+                    self.gen.pop(key, None)
+                    self.ttl.pop(key, None)
+                    return
                 fresh = self.gen.get(key, 0) == gen
                 old = self.data.get(key)
                 if failed and old is not None:   # keep what was known, ask again soon (at once if forgotten)
@@ -49,7 +56,6 @@ class Background:
                 else:
                     self.data[key] = (result, (time.monotonic() - (self.ttl.get(key, RETRY) - RETRY if failed else 0))
                                       if fresh else STALE)
-                self.busy.discard(key)
             self.on_ready()
         threading.Thread(target=work, daemon=True).start()
         return value
@@ -73,11 +79,16 @@ class Background:
                     self.data[k] = (self.data[k][0], STALE)
 
     def drop(self, key=None):
-        """Forget the answers themselves (nothing is shown until the new ones come)."""
+        """Forget the answers themselves (nothing is shown until the new ones come) · an answer
+        still on its way for them is thrown away when it arrives (memory: old searches)."""
         with self.lock:
-            for k in (list(self.data) if key is None else [key]):
-                self.gen[k] = self.gen.get(k, 0) + 1
+            for k in (list(self.data) + list(self.busy) if key is None else [key]):
                 self.data.pop(k, None)
+                if k in self.busy:
+                    self.dropped.add(k)
+                else:
+                    self.gen.pop(k, None)
+                    self.ttl.pop(k, None)
 
 
 def parallel(fn, items, workers=8):

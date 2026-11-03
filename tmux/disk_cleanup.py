@@ -14,7 +14,6 @@
 
 import os
 import sys
-import time
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -51,6 +50,8 @@ class Cleanup(TableApp):
         self.bg = Background(self.wake, fallback=lambda: (None, ""))
         self.items = None               # what this machine has: looked for when first in sight
         self.changed_seen = UNSET       # the first look only notes the value
+        self.my_stamps = set()          # the changes this pane made itself (it measured those already)
+        self.last_seq = None            # the last @disk-changed number seen: a jump means some were missed
         super().__init__(screen)
 
     def fetch(self):
@@ -79,9 +80,25 @@ class Cleanup(TableApp):
         if stamp != self.changed_seen:
             first = self.changed_seen is UNSET
             self.changed_seen = stamp
-            if not first:                        # cleaned from a popup or another pane: measure again
-                self.bg.forget()
-                self.reload()
+            seq, _ = disksrc.read_changed(stamp)
+            missed = seq is not None and self.last_seq is not None and seq != self.last_seq + 1
+            self.last_seq = seq                   # a bare time (a popup) starts the count again
+            if not first and stamp and (missed or stamp not in self.my_stamps):
+                self.measure_changed("" if missed else stamp)     # missed some (out of sight): all of them
+
+    def measure_changed(self, stamp):
+        """Something changed on disk: "seq time path" (deleted in Folders) → only the items under or
+        above that path are measured again · just a time (a popup, `clean`) → all of them."""
+        _, path = disksrc.read_changed(stamp)
+        path = os.path.realpath(path) if path else ""
+        for it in (self.items or {}).values():
+            ip = os.path.realpath(it.path) if it.path else ""
+            if not path or (ip and (ip == path or ip.startswith(path.rstrip("/") + "/")
+                                    or path.startswith(ip.rstrip("/") + "/"))):
+                self.bg.forget(("measuring", it.id))
+        if not path:
+            disksrc.forget_docker()
+        self.reload()
 
     # ─── look ───
     def summary(self):
@@ -139,12 +156,15 @@ class Cleanup(TableApp):
 
         def done(ok, out):
             self.bg.forget(("measuring", it.id))
-            disksrc.forget_docker()
+            if it.tool == "docker":
+                disksrc.forget_docker()
             if ok:
                 self.flash(f"{it.label}: " + (f"about {human(before)} freed" if before else "cleaned"))
             else:
                 self.flash(f"{it.label}: {(out.strip().splitlines() or ['failed'])[-1][:100]}", ok=False)
-            tmuxlink.put("@disk-changed", str(time.time_ns()))
+            stamp = disksrc.say_changed(it.path or "")
+            self.my_stamps.add(stamp)                 # this pane measured it already
+            self.last_seq = disksrc.read_changed(stamp)[0]
         self.background(r, "cleaning", ["sh", "-c", cmd], done, timeout=None)
 
     def ask_run_clean(self):

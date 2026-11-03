@@ -6,7 +6,9 @@
 
 import os
 import re
+import shutil
 import subprocess
+import sys
 import time
 
 
@@ -155,9 +157,15 @@ def copy(text):
     try:
         res = subprocess.run(["tmux", "load-buffer", "-w", "-"], input=text, text=True, capture_output=True,
                              timeout=10)
-        return res.returncode == 0
+        ok = res.returncode == 0
     except (subprocess.TimeoutExpired, OSError):
-        return False
+        ok = False
+    if sys.platform == "darwin" and shutil.which("pbcopy"):    # Terminal.app has no OSC 52: pbcopy too
+        try:
+            ok = subprocess.run(["pbcopy"], input=text, text=True, timeout=10).returncode == 0 or ok
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    return ok
 
 
 def session_for(path):

@@ -191,12 +191,13 @@ class Folders(TableApp):
         self.error = f"cannot read {tilde(path)}" if found is None else ""
         rows, total = [], 0
         done = bool(m and m.done)
+        mounts = set(disksrc.mount_points())         # (kept 10 s: no ismount() per folder, slow on /mnt/c)
         for name, full, st in found or []:
             is_link = stat.S_ISLNK(st.st_mode)
             is_dir = stat.S_ISDIR(st.st_mode) or (is_link and os.path.isdir(full))   # a link to a folder opens it
             if is_dir:
                 size, _ = self.size_of(full)
-                other_disk = size is None and done and os.path.ismount(full)
+                other_disk = size is None and done and full in mounts
             else:
                 size = st.st_blocks * 512 if hasattr(st, "st_blocks") else st.st_size     # on disk, like du
                 other_disk = False
@@ -421,8 +422,8 @@ class Folders(TableApp):
             else:
                 self.flash(f"could not delete it all: {(out.strip().splitlines() or ['?'])[-1][:100]}", ok=False)
                 self.ensure_measured(self.path, again=True)          # what is left is measured again
-            self.my_stamp = str(time.time_ns())
-            tmuxlink.put("@disk-changed", self.my_stamp)
+            # "seq time path": the other panes measure again only what is under or above that path
+            self.my_stamp = disksrc.say_changed(r["path"])
             nxt = getattr(self, "after_delete", None)
             if nxt:
                 self.cur_id = self.sel_id = nxt

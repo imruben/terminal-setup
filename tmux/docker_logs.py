@@ -37,7 +37,7 @@ import time
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from logfmt import mark, parse
-from tui import ANSI, DIM, GREEN, RESET, TEXT, YELLOW, wrap
+from tui import ANSI, DIM, GREEN, RESET, SUB, SURFACE, TEXT, YELLOW, vlen, wrap
 from viewer import Viewer, run
 
 # A log line keeps its colours (SGR: ESC [ digits ; m) and nothing else that a terminal would
@@ -454,6 +454,11 @@ class Logs(Viewer):
         rng = next((l for l, v in RANGES if v == self.since), "")
         search = (f"{YELLOW}{ICON_CLOCK} {rng.lower()}{RESET} {DIM}·{RESET} " if self.since else "") + \
                  f"{DIM}search ❯ {RESET}{TEXT}{self.query}{RESET}{YELLOW}▏{RESET} "
+        self.clear_span = None
+        if self.query:                               # a ✕ that clears the search, like the lists' filter
+            x = 2 + vlen(search)                     # the status row starts at column 2 (Viewer.draw)
+            self.clear_span = (x, x + 2)
+            search += f"{SURFACE}{SUB} ✕ {RESET} "
         if self.pending:
             state = f"{YELLOW}searching… "
         elif self.filtering():
@@ -506,6 +511,14 @@ class Logs(Viewer):
             self.new_lines = 0
             self.rebuild()
             self.top = self.max_top
+
+
+    def on_mouse(self, b, x, y, released):
+        span = getattr(self, "clear_span", None)
+        if b == 0 and not released and y == 2 and span and span[0] <= x <= span[1]:
+            self.query, self.top, self.following, self.pending, self.new_lines = "", 0, True, True, 0
+            return
+        super().on_mouse(b, x, y, released)
 
 
 class SavingLogs(Logs):

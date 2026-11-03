@@ -51,14 +51,11 @@ class Packages(SourcesPane, TableApp):
     def fetch(self):
         notes, rows, self.error = read_notes(), [], ""
         for s in pkgsrc.sources():
-            if s.name in ("brew", "snap"):          # slow (brew) or may not answer (snapd starting): in the background
-                found = self.bg.get((s.name, "mine"), s.mine, 60) or []
-            else:
-                try:
-                    found = s.mine()
-                except OSError:                     # one source failing never empties the others
-                    found = []
-                self.error = self.error or s.error
+            # every source in the background (apt-mark + dpkg-query, the snap socket, brew): the pane
+            # never waits for one · a source failing keeps what it had (Background) and never
+            # empties the others
+            found = self.bg.get((s.name, "mine"), s.mine, 60) or []
+            self.error = self.error or s.error
             for p in found:
                 rows.append({**p, "id": f"{s.name}:{p['name']}", "src": s.name,
                              "why": notes.get(note_key(s.name, p["name"]), "")})

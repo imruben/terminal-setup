@@ -30,12 +30,19 @@ Funciona en **Ubuntu 26.04**, **Ubuntu 24.04**, **WSL** (Ubuntu dentro de Window
 - Sugerencias mientras escribes (`zsh-autosuggestions`) y colores de sintaxis (`zsh-syntax-highlighting`).
 - Autocompletado con vista previa ([fzf-tab](https://github.com/Aloxaf/fzf-tab)), `Ctrl+R` para buscar en el historial, `Ctrl+T` para buscar ficheros.
 - `ls` con iconos y colores ([eza](https://github.com/eza-community/eza)), `bat` en lugar de `cat`, `micro` como editor.
+- Buscar y moverse: [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`, texto dentro de ficheros), [fd](https://github.com/sharkdp/fd) (ficheros por nombre; también lo usa `Ctrl+T`), [zoxide](https://github.com/ajeetdsouza/zoxide) (`z carpeta` salta a las que más usas, `zi` para elegir).
+- [lazygit](https://github.com/jesseduffield/lazygit) para trabajar con git en la terminal (`Ctrl+a G` lo abre en una ventana flotante en la carpeta del panel, y también desde la pestaña git), [yq](https://github.com/mikefarah/yq) (jq para YAML), [shellcheck](https://www.shellcheck.net) (errores en scripts de shell; micro lo usa solo al guardar un `.sh`) y [tldr](https://github.com/tealdeer-rs/tealdeer) (`tldr tar`: ejemplos cortos de cualquier comando).
 - Funciones propias:
 
   | Comando | Qué hace |
   |---|---|
-  | `update` | actualiza todo: apt, snap, Homebrew, los plugins de zsh y de tmux (estos, con tmux abierto) |
-  | `clean` | limpia cachés y restos de apt, snap, Homebrew, journal y Docker |
+  | `update` | actualiza todo: apt, snap, Homebrew, uv, pnpm, Composer, el último Node LTS (fnm), las páginas de tldr, los plugins de zsh y de tmux (estos, con tmux abierto) |
+  | `clean` | limpia cachés y restos de apt, snap, Homebrew, journal, Docker, uv, pnpm, npm y Composer |
+  | `rgf <texto>` | busca dentro de los ficheros (rg), eliges el resultado con vista previa y lo abre en el editor en esa línea |
+  | `fe [patrón]` | eliges ficheros por nombre (fd + fzf, `Tab` marca varios) y los abre en el editor |
+  | `mkcd <dir>` / `extract <fichero>` | crear una carpeta y entrar / descomprimir cualquier formato |
+  | `serve [puerto]` | servidor web de la carpeta: PHP si hay `index.php` (o `public/index.php`), Python si no |
+  | `lg` · `pn` · `uvr` | lazygit · pnpm · uv run |
   | `installed-packages` | los paquetes que instalaste **tú** (apt, snap, brew) y por qué (notas) |
   | `ports` / `killport <puerto>` | qué escucha en cada puerto / liberarlo (pregunta antes) |
   | `dps` / `dsh` | contenedores Docker de un vistazo / entrar en uno |
@@ -193,7 +200,9 @@ Lo mismo con **`make`** (si no lo tienes: `sudo apt install make`; `./install.sh
 
 | | Ubuntu 26.04 / WSL | Ubuntu 24.04 | macOS |
 |---|---|---|---|
-| zsh, git, python3, jq, eza, bat, micro, btop, entr, ansifilter, git-delta, zsh-autosuggestions, zsh-syntax-highlighting | apt | apt | Homebrew (zsh y python3 ya vienen) |
+| zsh, git, python3, jq, eza, bat, micro, btop, entr, ansifilter, git-delta, ripgrep, fd, zoxide, tealdeer, shellcheck, zsh-autosuggestions, zsh-syntax-highlighting | apt | apt | Homebrew (zsh y python3 ya vienen) |
+| lazygit | apt | binario oficial (`~/.local/bin`) | Homebrew |
+| yq (mikefarah) | binario oficial (`~/.local/bin`: el `yq` de Ubuntu es otro programa) | igual | Homebrew |
 | tmux ≥ 3.6 | apt | compilado | Homebrew |
 | fzf ≥ 0.48 | apt | binario oficial (`~/.local/bin`) | Homebrew |
 | fastfetch | apt | `.deb` oficial | Homebrew |
@@ -202,7 +211,7 @@ Lo mismo con **`make`** (si no lo tienes: `sudo apt install make`; `./install.sh
 | JetBrainsMono Nerd Font | `~/.local/share/fonts` (en WSL: en Windows) | igual | Homebrew |
 | plugins (tpm, resurrect, continuum, extrakto, fzf-url, logging, cowboy, autoreload, fzf-tab) | git | git | git |
 
-**Opcionales** (si están, se usan; si no, no pasa nada): **Docker** (pestaña docker y su limpieza en disk), **lazygit** o **tig** (desde la pestaña git), **gh** (GitHub), **snap** y **Homebrew** en Linux (aparecen en la pestaña packages), **nvidia-smi** (GPU en Resources).
+**Opcionales** (si están, se usan; si no, no pasa nada): **Docker** (pestaña docker y su limpieza en disk), **tig** (desde la pestaña git, además de lazygit), **gh** (GitHub), **snap** y **Homebrew** en Linux (aparecen en la pestaña packages), **nvidia-smi** (GPU en Resources).
 
 ---
 

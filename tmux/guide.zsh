@@ -61,6 +61,7 @@ click here|Swap with the previous pane|swap-pane -U
 [Ctrl+V]|Paste · Windows Terminal|
 [Ctrl+a] [e]|Extract · pick any word, path, id or line on screen|@keys:e
 [Ctrl+a] [u]|Links · list the URLs on screen and open one in the browser|@keys:u
+[Ctrl+a] [G]|lazygit for the folder of this pane · q closes it|@keys:G
 @Inside copy mode|after Ctrl+a y, or once you scroll with the wheel
 [↑] [↓] [PgUp] [PgDn]|Scroll|
 [g] / [G]|Top / bottom of the history|
@@ -108,7 +109,7 @@ type in Search|Find any apt, snap or brew package · right-click to install it (
 [↑] [↓] [PgUp] [PgDn] [Home] [End]|Move in a list · the panes next to it follow the highlighted row|
 [Enter] on a row|Its menu (the same as right-click) · ↑↓ and Enter, or the letter in ( ) · Esc closes|
 [←] / [→] in a list|Sort by the previous / next column · [Ctrl+r] reverses the order|
-click a column title|Sort by it · click again to reverse|
+click a column title|Sort by it · again: reverse · a third time: the order the list started with|
 [Tab] / [Shift+Tab] in a package list|Next / previous source · all · apt · snap · brew (or click them)|
 [Double-click] a row|Its main action: open the port in the browser · elsewhere its menu|
 [Wheel] on a long menu|Scroll it · ▲ ▼ on its border show there is more|
@@ -137,6 +138,7 @@ type|Filter the list · Esc or a click on ✕ clears it|
 [Middle-click] a tab|Close it · asks first|
 [Right-click] a tab|Tab menu · rename, move, split, close (asks first)|
 [Wheel] on the bar|Previous / next tab|
+[Click] ◀ ▶ on the bar|Rotate through the tabs when they do not all fit (the system monitor's keep their whole names)|
 [Click] CPU / RAM|Go to the system monitor|@keys:M
 [Click] [◀] / [▶]|Previous / next tab · shown when they do not all fit|
 [Click] the session|Switch session|@picker
@@ -175,6 +177,22 @@ terminal start name|New terminals open that session (created in its folder if cl
 terminal guide|This guide|
 terminal files|Every file the install put on this machine, and what it is for|@shell:bash $TERMINAL_SETUP/install/files.sh | less -R
 terminal help|Every command|@shell:$TERMINAL_SETUP/tmux/terminal.zsh help; read -sk "?press any key"
+@Shell|functions and aliases of zsh/functions.zsh and zsh/aliases.zsh
+update|Update everything: apt, snap, brew, uv, pnpm, Composer, Node LTS (fnm), tldr pages, plugins|
+clean|Clean caches: apt, journal, snap, brew, Docker build cache, uv, pnpm, npm, Composer|
+rgf text|Search inside files (rg), pick a match with its preview, open the editor on that line|
+fe pattern|Pick files by name (fd · Tab marks several) and open them in the editor|
+z part · zi|Jump to a folder you use often (zoxide) · zi: pick it from a list|
+lg|lazygit · git in the terminal|
+tldr cmd|Short examples of any command (tldr tar)|
+mkcd dir|Create a folder and go into it|
+extract file|Unpack any archive (tar.*, zip, 7z, rar, gz…)|
+serve 8000|Web server for this folder · PHP when there is an index.php, Python otherwise|
+ports · killport 3000|What listens on each port · free one (asks first)|
+dps · dsh|Docker containers at a glance · open a shell in one|
+fkill|Pick processes with fzf and stop them|
+installed-packages|The packages you installed yourself, and why|
+pn · uvr|pnpm · uv run|
 @Settings|in your ~/.zshrc, above the terminal-setup line
 export TERMINAL_NO_AUTOSTART=1|Do not open tmux in new tabs|
 EOF

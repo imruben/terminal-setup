@@ -201,8 +201,13 @@ class Repos(TableApp):
         counts = {}
         for r in self.all:
             counts[r["root"]] = counts.get(r["root"], 0) + 1
+        names = {root: os.path.basename(root) or root for root in roots}
+        twice = {n for n in names.values() if list(names.values()).count(n) > 1}
+        for root in roots:                            # two roots with one name: their parents tell them apart
+            if names[root] in twice:
+                names[root] = f"{os.path.basename(os.path.dirname(root))}/{os.path.basename(root)}"
         return [("all", "all", self.root_filter == "all")] + \
-               [(root, f"{os.path.basename(root) or root} {counts[root]}", self.root_filter == root) for root in roots]
+               [(root, f"{names[root]} {counts[root]}", self.root_filter == root) for root in roots]
 
     def on_chip(self, name):
         self.root_filter = name

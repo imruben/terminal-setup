@@ -39,6 +39,7 @@ items=(
   '-#[fg=#6c7086,bold]TOOLS'                                             '' ''
   '󰍉  Extract text from screen'                                          'e' 'run -C "send-keys -K -c '\''#{client_name}'\'' C-a e"'
   '󰌷  Open a link from screen'                                           'u' 'run -C "send-keys -K -c '\''#{client_name}'\'' C-a u"'
+  '  lazygit for this folder'                                           'G' 'run -C "send-keys -K -c '\''#{client_name}'\'' C-a G"'
   '  Docker logs below'                                                 'D' 'split-window -v -l 30% -c "#{pane_current_path}" "docker compose logs -f --tail=100 || sleep 5"'
   '󰆓  Save sessions now'                                                 'C-s' 'run-shell "~/.tmux/plugins/tmux-resurrect/scripts/save.sh"'
   '󰋖  Guide · all shortcuts'                                             '?' 'set -gF @popup-client "#{client_name}" ; display-popup -E -e TMUX_IN_POPUP=1 -w 80% -h 85% -b rounded -S "fg=#89b4fa" -T "#[align=centre,fg=#89b4fa,bold] tmux guide " "$TERMINAL_SETUP/tmux/guide.zsh"'

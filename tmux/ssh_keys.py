@@ -56,9 +56,15 @@ class Keys(TableApp):
         return out
 
     def fetch(self):
-        found = sshsrc.keys()
         loaded, self.problem = sshsrc.agent_keys()
         users = self.bg.get(("reading", sshsrc.config_stamp()), self.users, 300) or {}
+        found = list(sshsrc.keys())
+        have = {k["path"] for k in found}
+        for path in sorted(users):                   # keys the config uses from other folders (~/keys/prod…)
+            if path not in have:
+                k = sshsrc.key_entry(path)
+                if k:
+                    found.append(k)
         rows = []
         for k in found:
             rows.append({"id": k["path"], "name": k["name"], "path": k["path"], "pub": k["pub"], "type": k["type"],

@@ -15,6 +15,13 @@ brew "entr"                     # tmux-autoreload
 brew "ansifilter"               # tmux-logging: clean logs
 brew "git-delta"
 brew "starship"
+brew "ripgrep"                  # rg: search inside files
+brew "fd"                       # find files by name
+brew "zoxide"                   # z: cd that learns your folders
+brew "lazygit"                  # git in the terminal (also from the git tab)
+brew "tealdeer"                 # tldr: short examples of any command
+brew "yq"                       # jq for YAML (mikefarah/yq)
+brew "shellcheck"               # finds bugs in shell scripts (micro and make check use it)
 brew "zsh-autosuggestions"
 brew "zsh-syntax-highlighting"
 brew "coreutils"                # gdircolors (ls colours), gnumfmt

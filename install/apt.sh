@@ -6,11 +6,15 @@
 #    fzf        ≥ 0.48  24.04 has 0.44     → official binary in ~/.local/bin
 #    fastfetch          not in 24.04       → official .deb
 #    starship           not in 24.04       → official installer, in ~/.local/bin
+#    lazygit            not in 24.04       → official binary in ~/.local/bin
+#    yq                 Ubuntu's "yq" is another program (a Python jq wrapper)
+#                                          → mikefarah/yq's official binary in ~/.local/bin
 # ═══════════════════════════════════════════════════════════════
 
 # what the setup uses (Ubuntu package names)
 APT_PACKAGES="zsh git curl ca-certificates python3 jq eza bat micro btop entr ansifilter git-delta
-  zsh-autosuggestions zsh-syntax-highlighting fontconfig unzip iproute2 psmisc procps lsof"
+  zsh-autosuggestions zsh-syntax-highlighting fontconfig unzip iproute2 psmisc procps lsof
+  ripgrep fd-find zoxide tealdeer shellcheck"
 # a clipboard tool for pbcopy / pbpaste where there is a desktop (WSLg counts)
 APT_DESKTOP="wl-clipboard"
 
@@ -40,7 +44,7 @@ apt_refresh_lists() {
 }
 
 apt_plan() {
-  APT_MISSING="" NEED_TMUX_BUILD=0 NEED_FZF=0 NEED_FASTFETCH=0 NEED_STARSHIP=0
+  APT_MISSING="" NEED_TMUX_BUILD=0 NEED_FZF=0 NEED_FASTFETCH=0 NEED_STARSHIP=0 NEED_LAZYGIT=0 NEED_YQ=0
   apt_refresh_lists
   local p list=$APT_PACKAGES
   { [ "$HAS_DESKTOP" = 1 ] || [ "$IS_WSL" = 1 ]; } && list="$list $APT_DESKTOP"
@@ -58,7 +62,13 @@ apt_plan() {
   if ! have starship; then
     if [ -n "$(apt_candidate starship)" ]; then APT_MISSING="$APT_MISSING starship"; else NEED_STARSHIP=1; fi
   fi
+  if ! have lazygit; then
+    if [ -n "$(apt_candidate lazygit)" ]; then APT_MISSING="$APT_MISSING lazygit"; else NEED_LAZYGIT=1; fi
+  fi
+  have_mikefarah_yq || NEED_YQ=1
 }
+# the yq of Homebrew, snap and every guide (Go, mikefarah): not Ubuntu's Python one
+have_mikefarah_yq() { have yq && yq --version 2>&1 | grep -q mikefarah; }
 
 apt_show_plan() {
   [ -n "$APT_MISSING" ] && info "apt install:${APT_MISSING}" || ok "every apt package is there"
@@ -66,6 +76,8 @@ apt_show_plan() {
   [ "$NEED_FZF" = 1 ] && info "fzf $FZF_VERSION: official binary in ~/.local/bin (Ubuntu's is older than $FZF_MIN)"
   [ "$NEED_FASTFETCH" = 1 ] && info "fastfetch $FASTFETCH_VERSION: official .deb (not in this Ubuntu)"
   [ "$NEED_STARSHIP" = 1 ] && info "starship: official installer, in ~/.local/bin (not in this Ubuntu)"
+  [ "$NEED_LAZYGIT" = 1 ] && info "lazygit $LAZYGIT_VERSION: official binary in ~/.local/bin (not in this Ubuntu)"
+  [ "$NEED_YQ" = 1 ] && info "yq $YQ_VERSION: official binary in ~/.local/bin (Ubuntu's yq is a different program)"
   return 0
 }
 
@@ -76,8 +88,8 @@ apt_install() {
     info "refreshing the package lists (apt-get update)…"
     apt_get update
   fi
-  case "$APT_MISSING$NEED_TMUX_BUILD$NEED_FZF$NEED_FASTFETCH$NEED_STARSHIP" in
-    0000) ok "nothing to install: every package is there" ;;
+  case "$APT_MISSING$NEED_TMUX_BUILD$NEED_FZF$NEED_FASTFETCH$NEED_STARSHIP$NEED_LAZYGIT$NEED_YQ" in
+    000000) ok "nothing to install: every package is there" ;;
   esac
   if [ -n "$APT_MISSING" ]; then
     info "installing $(printf '%s\n' $APT_MISSING | wc -l | tr -d ' ') packages (a few minutes)…"
@@ -113,11 +125,34 @@ apt_install() {
     run sh -c "sh '$tmp/starship-install.sh' -y -b '$HOME/.local/bin' >/dev/null"
     ok "starship in ~/.local/bin"
   fi
+  if [ "$NEED_LAZYGIT" = 1 ]; then
+    local lgarch=x86_64; [ "$ARCH" = arm64 ] && lgarch=arm64
+    run curl -fsSL -o "$tmp/lazygit.tgz" \
+      "https://github.com/jesseduffield/lazygit/releases/download/v$LAZYGIT_VERSION/lazygit_${LAZYGIT_VERSION}_linux_$lgarch.tar.gz"
+    run mkdir -p ~/.local/bin
+    run tar -xzf "$tmp/lazygit.tgz" -C ~/.local/bin lazygit
+    ok "lazygit $LAZYGIT_VERSION in ~/.local/bin"
+  fi
+  if [ "$NEED_YQ" = 1 ]; then
+    run mkdir -p ~/.local/bin
+    run curl -fsSL -o "$tmp/yq" "https://github.com/mikefarah/yq/releases/download/v$YQ_VERSION/yq_linux_$ARCH"
+    run install -m 755 "$tmp/yq" ~/.local/bin/yq
+    ok "yq $YQ_VERSION in ~/.local/bin"
+  fi
   rm -rf "$tmp"
-  # Ubuntu calls bat "batcat": the setup (and you) can call it bat
+  # Ubuntu calls bat "batcat" and fd "fdfind": the setup (and you) can call them bat and fd
   if ! have bat && have batcat; then
     run mkdir -p ~/.local/bin
     run ln -sf "$(command -v batcat)" ~/.local/bin/bat
     ok "bat → batcat (~/.local/bin/bat)"
+  fi
+  if ! have fd && have fdfind; then
+    run mkdir -p ~/.local/bin
+    run ln -sf "$(command -v fdfind)" ~/.local/bin/fd
+    ok "fd → fdfind (~/.local/bin/fd)"
+  fi
+  # tldr's pages are downloaded apart from the program (later: `update` refreshes them)
+  if have tldr && [ "${DRY_RUN:-0}" = 0 ]; then
+    tldr --update >/dev/null 2>&1 && ok "tldr pages downloaded" || warn "tldr --update failed: run it later"
   fi
 }

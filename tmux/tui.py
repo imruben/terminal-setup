@@ -107,6 +107,22 @@ def ellipsis(s, n):
     return s if vlen(s) <= n else (cut(s, n - 1) + "…" if n > 0 else "")
 
 
+SGR_CODE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def colour_at(tokens):
+    """The colour codes in effect after tokens (since the last reset): what a continuation
+    line starts with so it keeps the colour."""
+    active = []
+    for t in tokens:
+        if SGR_CODE.fullmatch(t):
+            if t in ("\x1b[0m", "\x1b[m"):
+                active = []
+            else:
+                active.append(t)
+    return "".join(active)
+
+
 def wrap(line, width, indent="  "):
     """Split a line (with colour codes) into pieces of `width` visible cells, at a space
     when there is one in the second half of the piece (else mid-word, e.g. a long URL)."""
@@ -130,11 +146,12 @@ def wrap(line, width, indent="  "):
             if cut_at is not None and line[i] != " ":
                 rest = cur[cut_at + 1:]
                 out.append("".join(cur[:cut_at]))
-                cur = [indent] + rest
+                # the continuation keeps the colour the line had where it was cut
+                cur = [indent, colour_at(cur[:cut_at + 1])] + rest
                 vis = len(indent) + sum(vlen(t) for t in rest if not ANSI.fullmatch(t))
             else:
                 out.append("".join(cur))
-                cur, vis = [indent], len(indent)      # continuation lines are indented
+                cur, vis = [indent, colour_at(cur)], len(indent)      # continuation lines are indented
                 if line[i] == " ":                    # no space at the start of a continuation
                     i += 1
                     continue
@@ -203,6 +220,11 @@ class Menu:
         return self.x <= x < self.x + self.w and self.y <= y < self.y + self.h
 
     def draw(self):
+        sys.stdout.write(self.render())
+        sys.stdout.flush()
+
+    def render(self):
+        """The menu as text to write over the screen (with it, in one write: no flicker)."""
         border = ACCENT
         t = f" {ellipsis(self.title, self.inner - 2)} "
         left = (self.inner - vlen(t)) // 2
@@ -228,8 +250,7 @@ class Menu:
             if len(more) + 2 <= self.inner:
                 bottom = f"{'─' * (self.inner - len(more) - 1)}{RESET}{TEXT}{more}{RESET}{border}─"
         out.append(f"\x1b[{self.y + self.h - 1};{self.x}H{border}╰{bottom}╯{RESET}")
-        sys.stdout.write("".join(out))
-        sys.stdout.flush()
+        return "".join(out)
 
     def on_mouse(self, b, x, y, released):
         """Returns ('pick', action) · ('close',) · None."""
@@ -334,11 +355,13 @@ class Screen:
         return rows, cols
 
     @staticmethod
-    def paint(lines):
+    def paint(lines, over=None):
         """lines: one string per screen row (already cut to width) · never more rows than the
-        pane has: one more would scroll the title row away (and mouse rows with it)."""
+        pane has: one more would scroll the title row away (and mouse rows with it) · over: a
+        menu drawn on top, in the same write (two writes would show the screen without it)."""
         lines = lines[:max(1, Screen.size()[0])]
-        sys.stdout.write("\x1b[H" + "\r\n".join(l + RESET + CLEAR_EOL for l in lines) + "\x1b[J")
+        sys.stdout.write("\x1b[H" + "\r\n".join(l + RESET + CLEAR_EOL for l in lines) + "\x1b[J"
+                         + (over.render() if over else ""))
         sys.stdout.flush()
 
     def events(self, tick=None):

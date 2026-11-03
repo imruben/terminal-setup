@@ -73,14 +73,16 @@ def blocks():
     stamp = []
     out = []
 
-    def read(path, depth):
+    def read(path, depth, within=()):
+        """within: the blocks the Include sits in, outermost first, ("host", patterns) or
+        ("match", condition): its file only counts for a host all of them take."""
         try:
             with open(path, encoding="utf-8", errors="replace") as f:
                 lines = f.read().splitlines()
             stamp.append((path, os.path.getmtime(path)))
         except OSError:
             return
-        cur = {"kind": "top", "patterns": [], "file": path, "line": 1, "end": 0, "first": True}
+        cur = {"kind": "top", "patterns": [], "file": path, "line": 1, "end": 0, "first": True, "within": within}
         out.append(cur)
         for n, raw in enumerate(lines, 1):
             line = raw.strip()
@@ -91,7 +93,7 @@ def blocks():
             if key in ("host", "match"):
                 cur["end"] = n - 1
                 cur = {"kind": key, "patterns": words(value) if key == "host" else [value], "file": path,
-                       "line": n, "end": len(lines), "first": False}
+                       "line": n, "end": len(lines), "first": False, "within": within}
                 out.append(cur)
             elif key == "include" and depth < 4:
                 for pat in words(value):
@@ -99,8 +101,9 @@ def blocks():
                     pat = pat if os.path.isabs(pat) else os.path.join(SSH_DIR, pat)
                     folder = os.path.dirname(pat)       # a file added there changes the folder's time
                     stamp.append((folder, os.path.getmtime(folder) if os.path.isdir(folder) else 0))
+                    inside = within + (((cur["kind"], cur["patterns"]),) if cur["kind"] != "top" else ())
                     for p in sorted(glob.glob(pat)):
-                        read(p, depth + 1)
+                        read(p, depth + 1, inside)
         cur["end"] = len(lines)
 
     if _blocks_cache[0] is not None and _blocks_cache[0] == _restat(_blocks_cache[0]):
@@ -163,7 +166,7 @@ def concrete_hosts():
         if b["kind"] != "host":
             continue
         for p in b["patterns"]:
-            if not any(c in p for c in "*?!") and p not in seen:
+            if not any(c in p for c in "*?!") and p not in seen and within_ok(b, p):
                 seen.add(p)
                 out.append((p, b))
     return out
@@ -181,11 +184,23 @@ def matches(patterns, name):
     return hit
 
 
+def within_ok(b, host):
+    """The Host blocks an Include of b sits in all take host (a Match one: maybe, ssh decides)."""
+    return all(kind != "host" or matches(pats, host) for kind, pats in b.get("within") or ())
+
+
+def within_text(b):
+    """'Host a b › Match …' for the blocks an Include of b sits in."""
+    return " › ".join(f"{'Host' if kind == 'host' else 'Match'} {' '.join(pats)}" for kind, pats in b.get("within") or ())
+
+
 def applying(alias):
     """The blocks that apply to alias, in order (Match blocks: maybe, ssh decides)."""
     host = alias.rsplit("@", 1)[-1]
     out = []
     for b in blocks():
+        if not within_ok(b, host):
+            continue                             # Included inside a Host block this host does not match
         if b["kind"] == "top" and b["end"] >= b["line"] and any(l.strip() and not l.strip().startswith("#")
                                                                   for l in block_text(b)):
             out.append(b)
@@ -377,41 +392,75 @@ def unmetafy(data):
     return bytes(out)
 
 
-_hist_cache = [None, None]
+_hist_cache = [None, None]   # [-, the merged list history() gave last]
+_hist_files = {}   # history file → (inode, mtime, bytes read, the bytes just before, its entries, a bash #time waiting, a last unfinished line)
+TAIL = 64                 # bytes checked again before reading on: an in-place rewrite changes them
+
+
+def _parse_history(data, zsh, when=None):
+    """(entries, the bash #time still waiting for its command) of a piece of a history file."""
+    text = (unmetafy(data) if zsh else data).decode("utf-8", "replace")
+    out = []
+    for line in text.splitlines():
+        m = re.match(r"^: (\d+):\d+;(.*)$", line)          # zsh: ": 1730000000:0;cmd"
+        if m:
+            when, line = int(m[1]), m[2]
+        elif re.match(r"^#\d{9,11}$", line):             # bash: "#1730000000" before the command
+            when = int(line[1:])
+            continue
+        if not any(c in line for c in CLIENTS) or len(line) > 500:
+            when = None
+            continue
+        hit = parse_ssh(line)
+        if hit:
+            out.append((when, line, hit["prog"], hit["dest"], hit))
+        when = None
+    return out, when
 
 
 def history():
     """[(time or None, command, prog, destination, parsed)] of the ssh-family commands in your
-    shell history, oldest first (zsh's extended history and bash's HISTTIMEFORMAT have the times)."""
-    stamp = tuple((p, os.path.getmtime(p)) for p in HISTORY if os.path.exists(p))
-    if _hist_cache[0] == stamp:
-        return _hist_cache[1]
-    out = []
+    shell history, oldest first (zsh's extended history and bash's HISTTIMEFORMAT have the times).
+    Read incrementally: a shell only adds lines at the end, so only those are parsed; a file that
+    got shorter or was replaced (zsh and bash rewrite it now and then) is read again whole."""
+    changed = False
     for path in HISTORY:
         try:
+            st = os.stat(path)
+        except OSError:
+            if _hist_files.pop(path, None) is not None:
+                changed = True
+            continue
+        old = _hist_files.get(path)
+        if old and old[0] == st.st_ino and old[1] == st.st_mtime_ns and old[2] == st.st_size:
+            continue                                       # nothing new
+        ino, _, done, tail, entries, when, _ = old or (None, 0, 0, b"", [], None, [])
+        try:
             with open(path, "rb") as f:
+                if ino == st.st_ino and 0 < done <= st.st_size:
+                    f.seek(done - len(tail))
+                    if f.read(len(tail)) != tail:          # rewritten in place: other bytes before
+                        ino = None
+                if ino != st.st_ino or st.st_size < done:  # rewritten or replaced: from the start
+                    ino, done, tail, entries, when = st.st_ino, 0, b"", [], None
+                    f.seek(0)
                 data = f.read()
         except OSError:
             continue
-        text = (unmetafy(data) if path.endswith("zsh_history") else data).decode("utf-8", "replace")
-        when = None
-        for line in text.splitlines():
-            m = re.match(r"^: (\d+):\d+;(.*)$", line)          # zsh: ": 1730000000:0;cmd"
-            if m:
-                when, line = int(m[1]), m[2]
-            elif re.match(r"^#\d{9,11}$", line):             # bash: "#1730000000" before the command
-                when = int(line[1:])
-                continue
-            if not any(c in line for c in CLIENTS) or len(line) > 500:
-                when = None
-                continue
-            hit = parse_ssh(line)
-            if hit:
-                out.append((when, line, hit["prog"], hit["dest"], hit))
-            when = None
-    out.sort(key=lambda h: h[0] or 0)                      # zsh and bash together, by time
-    _hist_cache[0], _hist_cache[1] = stamp, out
-    return out
+        cut = data.rfind(b"\n") + 1
+        zsh = path.endswith("zsh_history")
+        new, when = _parse_history(data[:cut], zsh, when)
+        # a last line still without its newline: shown now, kept once it is whole
+        partial = _parse_history(data[cut:], zsh, when)[0] if cut < len(data) else []
+        tail = (tail + data[:cut])[-TAIL:]
+        fresh = not old or old[4] is not entries               # first read, or read again whole
+        changed = changed or fresh or bool(new) or partial != old[6]
+        _hist_files[path] = (ino, st.st_mtime_ns, done + cut, tail, entries + new, when, partial)
+    if changed or _hist_cache[1] is None:
+        out = [e for f in _hist_files.values() for e in f[4] + f[6]]
+        out.sort(key=lambda h: h[0] or 0)                  # zsh and bash together, by time
+        _hist_cache[1] = out
+    return _hist_cache[1]
 
 
 def host_of(dest):
@@ -564,26 +613,47 @@ def keys():
     if _keys_cache[0] == stamp:
         return _keys_cache[1]
     for name in names:
-        path = os.path.join(SSH_DIR, name)
-        if name.endswith(".pub") or not os.path.isfile(path) or name in ("config", "known_hosts", "authorized_keys"):
+        if name.endswith(".pub") or name in ("config", "known_hosts", "authorized_keys"):
             continue
+        k = key_entry(os.path.join(SSH_DIR, name))
+        if k:
+            seen.add(k["path"])
+            out.append(k)
+    _keys_cache[0], _keys_cache[1] = stamp, out
+    return out
+
+
+_key_files = {}
+
+
+def key_entry(path):
+    """{path, name, pub, type, bits, fingerprint, comment, encrypted} of one private key file ·
+    None when it is not one (kept per file while it does not change)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    pub = path + ".pub" if os.path.exists(path + ".pub") else ""
+    stamp = (st.st_mtime, st.st_size, pub)
+    hit = _key_files.get(path)
+    if hit and hit[0] == stamp:
+        return hit[1]
+    entry = None
+    if os.path.isfile(path):
         try:
             with open(path, "rb") as f:
                 head = f.read(4096)
         except OSError:
-            continue
-        if b"PRIVATE KEY-----" not in head[:80]:
-            continue
-        pub = path + ".pub" if os.path.exists(path + ".pub") else ""
-        rc, text, _ = run(["ssh-keygen", "-lf", pub or path], timeout=5)
-        m = re.match(r"(\d+) (\S+) (.*) \(([\w-]+)\)$", text.strip())    # ED25519-SK too
-        bits, fp, comment, kind = (m.groups() if m else ("", "", "", "?"))
-        encrypted = is_encrypted(head)
-        seen.add(path)
-        out.append({"path": path, "name": name, "pub": pub, "type": kind, "bits": bits, "fingerprint": fp,
-                    "comment": comment, "encrypted": encrypted})
-    _keys_cache[0], _keys_cache[1] = stamp, out
-    return out
+            head = b""
+        if b"PRIVATE KEY-----" in head[:80]:
+            rc, text, _ = run(["ssh-keygen", "-lf", pub or path], timeout=5)
+            m = re.match(r"(\d+) (\S+) (.*) \(([\w-]+)\)$", text.strip())    # ED25519-SK too
+            bits, fp, comment, kind = (m.groups() if m else ("", "", "", "?"))
+            entry = {"path": path, "name": tilde(path) if os.path.dirname(path) != SSH_DIR else os.path.basename(path),
+                     "pub": pub, "type": kind, "bits": bits, "fingerprint": fp, "comment": comment,
+                     "encrypted": is_encrypted(head)}
+    _key_files[path] = (stamp, entry)
+    return entry
 
 
 def is_encrypted(head):

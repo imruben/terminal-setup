@@ -163,6 +163,26 @@ def mounts_under(path):
     return [m for m in mount_points() if m.startswith(pre)]
 
 
+# ─── "something changed on disk": the @disk-changed message between the disk panes ───
+def say_changed(path=""):
+    """Write @disk-changed = "SEQ TIME PATH" (SEQ one more than the last one, so a pane that missed
+    one, out of sight, knows) · returns what was written."""
+    import tmuxlink
+    last = (tmuxlink.get("@disk-changed") or "").split(" ", 1)[0]
+    seq = int(last) + 1 if last.isdigit() and len(last) < 12 else 1
+    stamp = f"{seq} {time.time_ns()} {path}".rstrip()
+    tmuxlink.put("@disk-changed", stamp)
+    return stamp
+
+
+def read_changed(stamp):
+    """(seq or None, path) of a @disk-changed value · a bare time (a popup, `clean`) has neither."""
+    parts = (stamp or "").split(" ", 2)
+    if len(parts) >= 2 and parts[0].isdigit() and len(parts[0]) < 12:
+        return int(parts[0]), (parts[2] if len(parts) > 2 else "")
+    return None, ""
+
+
 # ─── Measure: du in the background ───
 def device(path):
     try:

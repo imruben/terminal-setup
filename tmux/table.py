@@ -154,6 +154,7 @@ class TableApp:
             self.sort_key, self.sort_desc = col.sort, col.desc
         else:
             self.sort_key, self.sort_desc = self.sort_key or self.columns[0].key, False
+        self.default_sort = (self.sort_key, self.sort_desc)   # the order the pane starts with (3rd click: back to it)
         # nothing is read until the pane is in sight (the system session starts with every tab)
         self.zoomed, self.visible, self.opts = tmuxlink.pane_view(*self.watch)
         self.all, self.loaded, self.reloaded_at = [], False, float("-inf")
@@ -357,9 +358,7 @@ class TableApp:
                 lines.append(highlight(TEXT + body, w) if i == hot else cut(self.row_colour(r) + body, w))
 
         lines.append(cut(self.footer(self.h), w))
-        self.screen.paint(lines)
-        if self.menu:
-            self.menu.draw()
+        self.screen.paint(lines, self.menu)
 
     def footer(self, y):
         if self.prompt:
@@ -375,7 +374,13 @@ class TableApp:
         if self.msg:
             return " " + self.msg
         r = self.current()
-        return " " + (self.detail(r) if r else f"{DIM}{'nothing matches' if self.loaded else 'loading…'}")
+        waiting = not self.loaded or (not self.all and self.still_loading())
+        return " " + (self.detail(r) if r else f"{DIM}{'loading…' if waiting else 'nothing matches'}")
+
+    def still_loading(self):
+        """Answers still on their way (a pane with a Background says so): 'loading…', not 'nothing matches'."""
+        bg = getattr(self, "bg", None)
+        return bool(bg and bg.loading())
 
     # ─── helpers for subclasses ───
     def confirm(self, question, action, row):
@@ -576,8 +581,13 @@ class TableApp:
         self.msg = ""
 
     def sort_by(self, col):
-        """Sort by a column (its own direction first) · the same one again reverses."""
-        if col.sort == self.sort_key:
+        """Sort by a column (its own direction first) · the same one again reverses · a third
+        time: back to the order the pane started with (running first, the config's order…)."""
+        if col.sort == self.sort_key and self.sort_desc == col.desc and (col.sort, col.desc) != self.default_sort:
+            self.sort_desc = not self.sort_desc
+        elif col.sort == self.sort_key and (col.sort, col.desc) != self.default_sort:
+            self.sort_key, self.sort_desc = self.default_sort
+        elif col.sort == self.sort_key:              # the default column itself: reverse / back
             self.sort_desc = not self.sort_desc
         else:
             self.sort_key, self.sort_desc = col.sort, col.desc
@@ -607,10 +617,11 @@ class TableApp:
                 self.touched = True
                 self.ensure_visible()
         elif name in ("left", "right"):                  # sort by the previous / next column
-            cols = getattr(self, "cols_shown", None) or self.columns
-            at = next((n for n, c in enumerate(cols) if c.sort == self.sort_key), -1)
-            c = cols[(at + (1 if name == "right" else -1)) % len(cols)]
-            self.sort_key, self.sort_desc = c.sort, c.desc
+            cols = [(c.sort, c.desc) for c in (getattr(self, "cols_shown", None) or self.columns)]
+            if self.default_sort[0] not in [k for k, _ in cols]:
+                cols.append(self.default_sort)           # the starting order is one more stop
+            at = next((n for n, (k, _) in enumerate(cols) if k == self.sort_key), -1)
+            self.sort_key, self.sort_desc = cols[(at + (1 if name == "right" else -1)) % len(cols)]
             self.apply()
             self.ensure_visible()
         elif name == "ctrl-r":

@@ -24,7 +24,7 @@ from table import Column, TableApp, run
 from tui import DIM, SUB, TEXT, YELLOW
 
 ICON = dict(up="\U000F06B0", all="\U000F0B7A", check="\U000F0450", info="\U000F02FD")
-ASK_AGAIN = {"snap": 1800, "brew": 60}        # seconds between background checks (snap asks the store)
+ASK_AGAIN = {"apt": 30, "snap": 1800, "brew": 60}   # seconds between background checks (snap asks the store)
 
 
 def ago(seconds):
@@ -56,8 +56,7 @@ class Updates(SourcesPane, TableApp):
     def fetch(self):
         rows, notes = [], read_notes()
         for s in pkgsrc.sources():
-            found = s.updates() if s.name == "apt" else (self.bg.get((s.name, "updates"), s.updates,
-                                                                     ASK_AGAIN[s.name]) or [])
+            found = self.bg.get((s.name, "updates"), s.updates, ASK_AGAIN[s.name]) or []    # never on the UI thread
             for u in found:
                 held = u.get("held", False)
                 rows.append({**u, "id": f"{s.name}:{u['name']}", "src": s.name, "held": held,

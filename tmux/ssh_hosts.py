@@ -41,7 +41,14 @@ LINE_EDITORS = ("micro", "vim", "nvim", "vi", "nano", "emacs", "kak", "hx", "hel
 
 
 def session_name(alias):
-    return "ssh-" + re.sub(r"[^\w-]", "-", alias)
+    """ssh-NAME (characters tmux does not take become -) · when another host of ~/.ssh/config
+    would get the same name (a.b and a-b: ssh-a-b), a short hash of the alias keeps them apart."""
+    clean = re.sub(r"[^\w-]", "-", alias)
+    if clean != alias and any(o != alias and re.sub(r"[^\w-]", "-", o) == clean
+                              for o, _ in sshsrc.concrete_hosts()):
+        import hashlib
+        clean += "-" + hashlib.sha1(alias.encode()).hexdigest()[:4]
+    return "ssh-" + clean
 
 
 class Hosts(TableApp):
