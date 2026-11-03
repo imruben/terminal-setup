@@ -34,6 +34,7 @@ class Keys(TableApp):
     noun = "keys"
     interval = 3.0
     sort_key = "name"
+    search_keys = ("name", "type", "comment", "used_by")
     columns = [Column("name", "KEY", 24, min=12),
                Column("pass", "PASS", 4),
                Column("type", "TYPE", 7, optional=True),
@@ -96,9 +97,15 @@ class Keys(TableApp):
         return f"{TEXT}{tilde(r['path'])}{DIM} · {r['type']} · {state} · {r['fp']}"
 
     def footer(self, y):
+        r = self.current()
         if self.problem and not (self.ask or self.prompt or self.msg):
-            return f" {YELLOW}{self.problem} (SSH_AUTH_SOCK): keys with a passphrase are asked every time"
+            return f" {YELLOW}{self.problem} (SSH_AUTH_SOCK){DIM} · " + (self.detail(r) if r else "")
         return super().footer(y)
+
+    def env(self):
+        """The agent this pane sees (a popup starts with tmux's environment, maybe another one)."""
+        sock = sshsrc.ssh_env().get("SSH_AUTH_SOCK")
+        return {"SSH_AUTH_SOCK": sock} if sock else {}
 
     def menu_title(self, r):
         return r["name"]
@@ -140,15 +147,15 @@ class Keys(TableApp):
     def add(self, r):
         if r["encrypted"]:           # the passphrase is typed in the popup
             self.popup(f"ssh-add · {r['name']}", f"ssh-add {shlex.quote(r['path'])} || {{ printf '\\npress Enter'; read -r _; }}",
-                       "70%", "30%")
+                       "70%", "30%", env=self.env())
             return
-        rc, out, err = sshsrc.run(["ssh-add", r["path"]], timeout=10)
+        rc, out, err = sshsrc.run(["ssh-add", r["path"]], timeout=10)      # no passphrase: no popup needed
         self.flash(f"{r['name']} is in the agent" if rc == 0 else f"ssh-add: {(err or out).strip()[:80]}", ok=rc == 0)
         self.reload()
 
     def add_all(self, rows):
         paths = " ".join(shlex.quote(r["path"]) for r in rows)
-        self.popup("ssh-add · every key", f"ssh-add {paths}; printf '\\npress Enter'; read -r _", "70%", "40%")
+        self.popup("ssh-add · every key", f"ssh-add {paths}; printf '\\npress Enter'; read -r _", "70%", "40%", env=self.env())
 
     def remove(self, r):
         target = r["pub"] or r["path"]

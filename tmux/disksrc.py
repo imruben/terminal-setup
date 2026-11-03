@@ -94,12 +94,12 @@ def mounts():
     for line in text.splitlines()[1:]:
         parts = line.split()
         if types is None:
-            if len(parts) < 7 or not parts[2].isdigit():
+            if len(parts) < 7 or not (parts[2].isdigit() and parts[3].isdigit() and parts[4].isdigit()):
                 continue
             dev, kind, size, used, free = parts[0], parts[1], int(parts[2]), int(parts[3]), int(parts[4])
             mnt = " ".join(parts[6:])
         else:
-            if len(parts) < 6 or not parts[1].isdigit():
+            if len(parts) < 6 or not (parts[1].isdigit() and parts[2].isdigit() and parts[3].isdigit()):
                 continue
             dev, size, used, free = parts[0], int(parts[1]), int(parts[2]), int(parts[3])
             mnt = " ".join(parts[5:])
@@ -108,8 +108,8 @@ def mounts():
             continue
         if MACOS and mnt == "/":
             continue                    # the sealed system volume: your files are on …/Data
-        if any(mnt == p.rstrip("/") or mnt.startswith(p) for p in SKIP_PREFIX):
-            continue
+        if any(mnt == p.rstrip("/") or mnt.startswith(p.rstrip("/") + "/") for p in SKIP_PREFIX):
+            continue                    # /dev/…, not /development
         if kind == "9p" and not re.match(r"^/mnt/[a-z]$", mnt):
             continue                    # WSL: only the Windows drives (C:, D:…)
         if (dev, kind) in seen and not dev.startswith(("none", "map")):
@@ -132,6 +132,35 @@ def label(mnt, dev):
     if mnt.startswith("/Volumes/"):
         return mnt[9:]
     return os.path.basename(mnt) or mnt
+
+
+_mounts = [0.0, ()]
+
+
+def mount_points():
+    """Every mount point (/proc/self/mounts, or `mount` on macOS), kept 10 s."""
+    if time.monotonic() - _mounts[0] < 10:
+        return _mounts[1]
+    found = []
+    try:
+        with open("/proc/self/mounts", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) > 1:
+                    found.append(parts[1].replace("\\040", " ").replace("\\011", "\t"))
+    except OSError:
+        for line in run_text("mount", timeout=10).splitlines():
+            m = re.match(r".+? on (.+) \(", line)
+            if m:
+                found.append(m[1])
+    _mounts[0], _mounts[1] = time.monotonic(), tuple(found)
+    return _mounts[1]
+
+
+def mounts_under(path):
+    """The disks mounted inside path (a delete must never reach them)."""
+    pre = path.rstrip("/") + "/"
+    return [m for m in mount_points() if m.startswith(pre)]
 
 
 # ─── Measure: du in the background ───
@@ -174,9 +203,12 @@ class Measure:
             self.proc = subprocess.Popen(["du", "-xk", self.root], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                          stdin=subprocess.DEVNULL, env=C_ENV)
         except OSError:
-            self.done, self.finished = True, time.time()
+            self.finished = time.time()
+            self.done = True
             self.on_progress()
             return
+        if self.cancelled:                       # cancelled before du started
+            self.cancel()
         threading.Thread(target=self.errors, daemon=True).start()
         last = time.monotonic()
         for raw in self.proc.stdout:
@@ -188,7 +220,8 @@ class Measure:
                 last = time.monotonic()
                 self.on_progress()
         self.proc.wait()
-        self.done, self.finished = True, time.time()
+        self.finished = time.time()              # before done: a reader seeing done finds finished set
+        self.done = True
         self.on_progress()
 
     def errors(self):
@@ -213,7 +246,7 @@ class Measure:
     def partial(self, path):
         """Some folder at or under path could not be read: its size is a lower bound."""
         pre = path.rstrip("/") + "/"
-        return any(u == path or u.startswith(pre) for u in self.unreadable)
+        return any(u == path or u.startswith(pre) for u in tuple(self.unreadable))   # du adds to it meanwhile
 
 
 # ─── Cleanup ───
@@ -244,7 +277,7 @@ def apt_autoremove():
 
 def journal_size():
     m = re.search(r"take up ([\d.]+[KMGT]?)", run_text("journalctl", "--disk-usage", timeout=20))
-    return (unit_bytes(m[1]), "") if m else (None, "")
+    return (unit_bytes(m[1]), "up to (keeps 7 days)") if m else (None, "")
 
 
 def snap_old():
@@ -282,7 +315,7 @@ def docker_df():
             total, active = d.get("TotalCount", "0"), d.get("Active", "0")
             unused = int(total) - int(active) if str(total).isdigit() and str(active).isdigit() else 0
             data[d.get("Type")] = (unit_bytes(d.get("Reclaimable", "0B").split(" ")[0], decimal=True) or 0,
-                                   f"{unused} unused of {total}")
+                                   f"{unused} unused of {total}", unused > 0)
         _docker.update(at=time.monotonic(), data=data)
         return data
 
@@ -293,15 +326,31 @@ def forget_docker():
         _docker["at"] = 0.0
 
 
+CLAUDE_VERSIONS = os.path.join(HOME, ".local", "share", "claude", "versions")
+
+
 def claude_versions():
-    """Old Claude Code versions next to the one ~/.local/bin/claude runs."""
-    d = os.path.join(HOME, ".local", "share", "claude", "versions")
+    """Old Claude Code versions next to the one ~/.local/bin/claude runs · nothing when that
+    one is not among them (then which one runs is not known: none is called old)."""
+    d = CLAUDE_VERSIONS
     current = os.path.realpath(os.path.join(HOME, ".local", "bin", "claude"))
     try:
-        old = [os.path.join(d, n) for n in os.listdir(d) if os.path.realpath(os.path.join(d, n)) != current]
+        names = os.listdir(d)
     except OSError:
         return [], 0
-    return old, sum(os.path.getsize(p) for p in old if os.path.isfile(p))
+    if os.path.dirname(current) != os.path.realpath(d):
+        return [], 0
+    old, total = [], 0
+    for n in names:
+        p = os.path.join(d, n)
+        if os.path.realpath(p) == current:
+            continue
+        try:
+            total += os.path.getsize(p) if os.path.isfile(p) else 0
+        except OSError:
+            continue
+        old.append(p)
+    return old, total
 
 
 def cache_dir(linux, mac):
@@ -309,9 +358,16 @@ def cache_dir(linux, mac):
 
 
 class Item:
-    def __init__(self, id, label, why, size, cmd, sudo=False, path=None, warn="", tool=None):
+    """Something that can be cleaned. size() → (bytes or None, note[, can clean although small]).
+    cmd: the shell command, or a function that gives it when you clean (what it removes then)."""
+
+    def __init__(self, id, label, why, size, cmd, sudo=False, path=None, warn="", tool=None, how=None):
         self.id, self.label, self.why, self.size_fn, self.cmd = id, label, why, size, cmd
         self.sudo, self.path, self.warn, self.tool = sudo, path, warn, tool
+        self.how = how or (cmd if isinstance(cmd, str) else "")
+
+    def command(self):
+        return self.cmd() if callable(self.cmd) else self.cmd
 
 
 def quote(path):
@@ -358,7 +414,7 @@ def items():
                  "stopped containers are removed (with what they wrote outside volumes)"),
                 ("Local Volumes", "docker-volumes", "Docker: unused volumes", "docker volume prune -a -f",
                  "DATA: volumes no container uses (old databases…) are deleted for good")):
-            out.append(Item(id, lbl, warn, lambda key=key: docker_df().get(key, (None, "")), cmd, warn=warn,
+            out.append(Item(id, lbl, warn, lambda key=key: docker_df().get(key, (None, "", False)), cmd, warn=warn,
                             tool="docker"))
     for id, lbl, linux, mac, tool_cmd in (
             ("pip", "pip downloads", ".cache/pip", "Library/Caches/pip", None),
@@ -379,13 +435,16 @@ def items():
             continue
         tool = tool_cmd.split()[0] if tool_cmd else None
         cmd = tool_cmd if tool_cmd and have(tool) else rm_cmd(path)
+        note = "up to (unused ones)" if tool_cmd and have(tool) and id == "pnpm" else ""
         out.append(Item(id, lbl, f"downloaded again when needed · {tilde(path)}",
-                        lambda path=path: (du_bytes(path), ""), cmd, path=path))
-    old, _ = claude_versions()
-    if old:
+                        lambda path=path, note=note: (du_bytes(path), note), cmd, path=path))
+    if os.path.isdir(CLAUDE_VERSIONS):
+        def claude_size():
+            old, total = claude_versions()
+            return total, f"{len(old)} old" if old else "nothing"
         out.append(Item("claude", "Claude Code: old versions", "every update keeps the previous ones",
-                        lambda: (claude_versions()[1], f"{len(claude_versions()[0])} old"),
-                        " ; ".join(rm_cmd(p) for p in old), path=os.path.dirname(old[0])))
+                        claude_size, lambda: " ; ".join(rm_cmd(p) for p in claude_versions()[0]) or "true",
+                        path=CLAUDE_VERSIONS, how="rm the versions ~/.local/bin/claude does not run"))
     trash = os.path.join(HOME, ".Trash" if MACOS else ".local/share/Trash")
     if os.path.isdir(trash):
         out.append(Item("trash", "trash", "what you deleted from a file manager",

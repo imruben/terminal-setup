@@ -22,13 +22,12 @@ import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import gitsrc
 import tmuxlink
-from background import Background
+from background import Background, parallel
 from gitsrc import ago, tilde
 from table import Column, TableApp, run
 from tui import BLUE, DIM, GREEN, RED, SUB, TEXT, YELLOW
@@ -61,8 +60,10 @@ def sync_text(st, has_remote):
         return ""
     if st.get("detached"):
         return "detached"
+    if st.get("gone"):
+        return "gone"                       # its upstream branch was deleted (merged on the remote?)
     if not st["upstream"]:
-        return "unpushed" if has_remote else "local"
+        return "…" if has_remote is None else "unpushed" if has_remote else "local"
     if not (st["ahead"] or st["behind"]):
         return "✓"
     return " ".join(t for t in (f"↑{st['ahead']}" if st["ahead"] else "", f"↓{st['behind']}" if st["behind"] else "") if t)
@@ -88,6 +89,7 @@ class Repos(TableApp):
     interval = 1.0
     reload_every = 3
     sort_key = "repo"
+    search_keys = ("repo", "branch_txt", "changes", "sync", "email", "remote", "doing")
     columns = [Column("repo", "REPO", 28, min=14),
                Column("branch_txt", "BRANCH", 18, min=8),
                Column("changes", "CHANGES", 11, sort="dirty", desc=True, min=7),
@@ -100,7 +102,7 @@ class Repos(TableApp):
 
     def __init__(self, screen):
         self.bg = Background(self.wake, fallback=dict)
-        self.pool = ThreadPoolExecutor(max_workers=8)
+        self.net_slots = threading.Semaphore(4)    # at most 4 fetch / pull / push at a time (sshd MaxStartups)
         self.root_filter = "all"
         self.repos = {}
         self.roots_seen = None
@@ -115,41 +117,49 @@ class Repos(TableApp):
             return None
 
     def scan(self):
-        roots, _ = gitsrc.read_roots()
-        return gitsrc.find_repos(roots)
+        roots, saved = gitsrc.read_roots()
+        return gitsrc.find_repos(roots, saved)
 
     def statuses(self, repos):
         paths = list(repos)
-        return dict(zip(paths, self.pool.map(gitsrc.status, paths)))
+        return {p: st for p, st in zip(paths, parallel(gitsrc.status, paths)) if st is not None}
 
     def settings_all(self, repos):
         paths = list(repos)
         aliases = gitsrc.ssh_aliases()
-        out = {}
-        for path, s in zip(paths, self.pool.map(gitsrc.settings, paths)):
+
+        def one(path):
+            s = gitsrc.settings(path)
             s["host"], s["path"], s["web"] = gitsrc.parse_remote(s["url"], aliases)
-            out[path] = s
-        return out
+            return s
+        return {p: s for p, s in zip(paths, parallel(one, paths)) if s is not None}
 
     def fetch(self):
         stamp = self.roots_stamp()
         if stamp != self.roots_seen:              # the list of folders changed: look again now
             self.roots_seen = stamp
             self.bg.forget(("scanning",))
-        self.repos = repos = self.bg.get(("scanning",), self.scan, 60) or {}
+        repos = self.bg.get(("scanning",), self.scan, 60) or {}
+        if repos.keys() != self.repos.keys():      # repos came or went: read them all at once
+            self.bg.forget(("status",))
+            self.bg.forget(("settings",))
+        self.repos = repos
         if not repos:
             return []
-        key = tuple(sorted(repos))
-        # every 3 s with a few repos; more of them are read less often (100 repos: every 13 s)
-        statuses = self.bg.get(("status", key), lambda: self.statuses(repos), 3 + len(repos) / 10) or {}
-        sets = self.bg.get(("settings", key), lambda: self.settings_all(repos), 30) or {}
+        # every 3 s with a few repos; more of them are read less often (100 repos: every 13 s).
+        # Until an answer arrives the last one stays (rows do not flicker or lose the selection)
+        statuses = self.bg.get(("status",), lambda: self.statuses(repos), 3 + len(repos) / 10) or {}
+        sets = self.bg.get(("settings",), lambda: self.settings_all(repos), 30) or {}
         rows = []
         for path, root in repos.items():
-            st, s = statuses.get(path), sets.get(path, {})
+            st, s = statuses.get(path), sets.get(path)
+            known = s is not None                  # settings read (None: not yet, say nothing about them)
+            s = s or {}
             rel = os.path.relpath(path, root) if path != root else os.path.basename(path)
             row = {"id": path, "repo": rel, "root": root, "path": path, "web": s.get("web", ""),
-                   "url": s.get("url", ""), "remote_name": s.get("remote", ""), "email": s.get("email", ""),
-                   "email_from": s.get("email_from", ""), "has_remote": bool(s.get("remotes")),
+                   "url": gitsrc.safe_url(s.get("url", "")), "remote_name": s.get("remote", ""),
+                   "email": s.get("email", ""), "email_from": s.get("email_from", ""), "known": known,
+                   "has_remote": bool(s.get("remotes")) if known else None,
                    "remote": (s.get("path", "") + (f"  {s['host']}" if s.get("host") and s["host"] != "github.com" else ""))
                    if s else "", "st": st}
             if not st:
@@ -164,7 +174,8 @@ class Repos(TableApp):
                            unsync=(st.get("ahead", 0) + st.get("behind", 0)) if st.get("upstream") else 0,
                            stash=st.get("stash", 0), stash_txt=str(st["stash"]) if st.get("stash") else "",
                            last=ago(st.get("last")), last_t=st.get("last"),
-                           fetched=ago(st.get("fetched")) if st.get("fetched") else ("never" if row["has_remote"] else ""),
+                           fetched="" if st.get("error") else ago(st.get("fetched")) if st.get("fetched")
+                           else ("never" if row["has_remote"] else ""),
                            fetched_t=st.get("fetched"))
                 if path in self.fetch_failed and (st.get("fetched") or 0) <= self.fetch_failed[path] + 5:
                     row["fetched"] = "failed"
@@ -204,7 +215,7 @@ class Repos(TableApp):
         n = sum(1 for r in rows if r["st"].get("behind"))
         if n:
             parts.append(f"{BLUE}{n} to pull")
-        n = sum(1 for r in rows if r["doing"] or r["error"] or r["st"].get("conflicts"))
+        n = sum(1 for r in rows if r["doing"] or r["error"] or r["st"].get("conflicts") or r["st"].get("gone"))
         if n:
             parts.append(f"{RED}{n} need a look")
         busy = len(self.busy)
@@ -215,6 +226,8 @@ class Repos(TableApp):
     def row_colour(self, r):
         if r["error"] or r["doing"] or (r["st"] or {}).get("conflicts"):
             return RED
+        if (r["st"] or {}).get("gone"):
+            return YELLOW
         if r["dirty"]:
             return YELLOW
         if r["unsync"] or r["sync"] == "unpushed":
@@ -227,9 +240,12 @@ class Repos(TableApp):
             return f"{DIM}{tilde(r['path'])} · reading…"
         if st.get("error"):
             return f"{RED}{st['error']}"
-        up = f" → {st['upstream']}" if st.get("upstream") else (" · not pushed yet" if r["has_remote"] else " · no remote")
+        up = (f" → {st['upstream']} {YELLOW}(gone from the remote: publish it again or delete the branch){DIM}"
+              if st.get("gone") else f" → {st['upstream']}" if st.get("upstream")
+              else "" if r["has_remote"] is None else " · not pushed yet" if r["has_remote"] else " · no remote")
         last = f" · {DIM}{gitsrc.ago_text(st['last'])}: {TEXT}{st['subject']}" if st.get("last") else " · no commits yet"
-        who = f"{DIM} · as {r['email']}" if r["email"] else f" · {RED}no user.email: commits fail"
+        who = (f"{DIM} · as {r['email']}" if r["email"] else "" if not r["known"]
+               else f" · {YELLOW}no user.email set{DIM}")
         return f"{TEXT}{tilde(r['path'])}{DIM} · {r['branch']}{up}{last}{who}"
 
     def footer(self, y):
@@ -258,12 +274,14 @@ class Repos(TableApp):
                                                                        f"cd {shlex.quote(r['path'])} && tig", "95%", "90%")))
         items.append((f"{ICON['shell']}  Shell here (popup)", "s", lambda: self.shell(r)))
         ahead, behind = st.get("ahead", 0), st.get("behind", 0)
+        tracked = st.get("upstream") and not st.get("gone")
+        can_push = r["has_remote"] and r["branch"] and not st.get("initial") and (ahead or not tracked)
         items += [("", "", None),
                   (f"{ICON['fetch']}  Fetch", "f", (lambda: self.fetch_one(r)) if r["has_remote"] else None),
                   (f"{ICON['pull']}  Pull{f' {behind}' if behind else ''} (fast-forward only)", "p",
-                   (lambda: self.pull(r)) if st.get("upstream") and not st.get("doing") else None),
-                  (f"{ICON['push']}  Push{f' {ahead}' if ahead else ''}…" if st.get("upstream") else f"{ICON['push']}  Publish the branch…",
-                   "P", (lambda: self.ask_push(r)) if r["has_remote"] and r["branch"] and (ahead or not st.get("upstream")) else None),
+                   (lambda: self.pull(r)) if tracked and not st.get("doing") else None),
+                  (f"{ICON['push']}  Push{f' {ahead}' if ahead else ''}…" if tracked else f"{ICON['push']}  Publish the branch…",
+                   "P", (lambda: self.ask_push(r)) if can_push else None),
                   (f"{ICON['fetch']}  Fetch every repo", "F", self.fetch_all),
                   ("", "", None)]
         if r["web"]:
@@ -282,7 +300,7 @@ class Repos(TableApp):
     def roots_items(self, r):
         items = [(f"{ICON['add']}  Add a folder to look in…", "a", self.ask_root),
                  (f"{ICON['edit']}  Edit the folders to look in…", "e", self.edit_roots)]
-        if r and r["root"] != r["path"]:
+        if r:
             items.append((f"{ICON['remove']}  Stop looking in {tilde(r['root'])}…", "x", lambda: self.ask_drop_root(r)))
         return items
 
@@ -291,7 +309,8 @@ class Repos(TableApp):
 
     # ─── actions ───
     def open_session(self, r):
-        name = os.path.basename(r["path"])
+        """A session named after the repo; when that name is taken by another folder: parent-repo."""
+        name = tmuxlink.session_for(r["path"])
         subprocess.Popen([os.path.join(HERE, "terminal.zsh"), "open", name, r["path"]],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.flash(f"session {name} in {tilde(r['path'])}")
@@ -300,16 +319,24 @@ class Repos(TableApp):
         sh = os.environ.get("SHELL") or "zsh"
         self.popup(f"shell · {r['repo']} · exit closes", f"cd {shlex.quote(r['path'])} && exec {shlex.quote(sh)}", "90%", "80%")
 
-    def net(self, r, doing, args, done):
+    def net(self, r, doing, steps, done):
         """git with the network, in the background and with no terminal: ssh cannot ask for
-        a passphrase in the middle of the pane (it fails and says so instead)."""
+        a passphrase in the middle of the pane (it fails and says so instead). steps: one
+        git command (a list) or several, run in turn until one fails. 4 at a time at most."""
         self.busy[r["id"]] = doing
+        steps = steps if steps and isinstance(steps[0], list) else [steps]
 
         def work():
+            ok, out = True, ""
             try:
-                res = subprocess.run(["git", "-C", r["path"], *args], capture_output=True, text=True, env=NET_ENV,
-                                     timeout=120, stdin=subprocess.DEVNULL, start_new_session=True, errors="replace")
-                ok, out = res.returncode == 0, (res.stdout + res.stderr).strip()
+                with self.net_slots:
+                    for args in steps:
+                        res = subprocess.run(["git", "-C", r["path"], *args], capture_output=True, text=True,
+                                             env=NET_ENV, timeout=120, stdin=subprocess.DEVNULL,
+                                             start_new_session=True, errors="replace")
+                        ok, out = res.returncode == 0, (out + "\n" + res.stdout + res.stderr).strip()
+                        if not ok:
+                            break
             except subprocess.TimeoutExpired:
                 ok, out = False, "no answer after 2 min"
             except OSError as e:
@@ -318,7 +345,7 @@ class Repos(TableApp):
                 self.busy.pop(r["id"], None)
             if not ok and ("passphrase" in out or "Permission denied" in out or "terminal prompts disabled" in out):
                 out += " · the key or password is asked in a terminal: run it there once (or ssh-add the key)"
-            self.bg.forget(("status", tuple(sorted(self.repos))))
+            self.bg.forget(("status",))
             done(ok, out)
             self.wake()
         threading.Thread(target=work, daemon=True).start()
@@ -361,32 +388,41 @@ class Repos(TableApp):
     def pull(self, r):
         def done(ok, out):
             if ok:
-                self.flash(f"{r['repo']}: " + ("up to date" if "Already up to date" in out else "pulled"))
+                self.flash(f"{r['repo']}: " + ("up to date" if "Already up to date" in out or "Already up-to-date" in out
+                                               else "pulled"))
             elif "would be overwritten" in out:
                 files = [l.strip() for l in out.splitlines() if l.startswith(("\t", "    ")) and l.strip()]
                 self.flash(f"{r['repo']}: the pull changes files you changed too ({', '.join(files[:3]) or '?'}"
                            f"{'…' if len(files) > 3 else ''}): commit or stash them first", ok=False)
-            elif "Not possible to fast-forward" in out or "diverg" in out:
+            elif "Not possible to fast-forward" in out or "diverg" in out or "not possible" in out.lower():
                 self.flash(f"{r['repo']}: your branch and the remote both have new commits · merge or rebase in a terminal",
                            ok=False)
             else:
                 self.flash(f"{r['repo']}: {last_line(out)}", ok=False)
-        self.net(r, "pulling", ["pull", "--ff-only"], done)
+        self.net(r, "pulling", [["fetch", "--quiet"],
+                                ["-c", "merge.autoStash=false", "merge", "--ff-only", "--no-edit", "@{upstream}"]], done)
 
     def ask_push(self, r):
         st = r["st"] or {}
         what = (f"Push {st['ahead']} commit{'s' if st['ahead'] != 1 else ''} of {r['branch']} to {st['upstream']}?"
-                if st.get("upstream") else f"Publish {r['branch']} to {r['remote_name'] or 'the remote'}?")
+                if st.get("upstream") and not st.get("gone") else f"Publish {r['branch']} to {r['remote_name'] or 'the remote'}?")
         self.confirm(what, lambda: self.push(r), r)
 
     def push(self, r):
+        """Exactly what the question said: this branch to its upstream (not what push.default,
+        pushRemote or matching would pick), or publish it to the remote."""
         st = r["st"] or {}
-        args = ["push"] if st.get("upstream") else ["push", "-u", r["remote_name"] or "origin", r["branch"]]
+        remote = gitsrc.git_out(r["path"], "config", f"branch.{r['branch']}.remote").strip()
+        merge = gitsrc.git_out(r["path"], "config", f"branch.{r['branch']}.merge").strip()
+        if st.get("upstream") and not st.get("gone") and remote and merge.startswith("refs/heads/"):
+            args = ["push", remote, f"HEAD:{merge}"]
+        else:
+            args = ["push", "-u", r["remote_name"] or "origin", f"HEAD:refs/heads/{r['branch']}"]
         self.net(r, "pushing", args,
                  lambda ok, out: self.flash(f"{r['repo']}: pushed" if ok else f"{r['repo']}: {last_line(out)}", ok))
 
     def rescan(self):
-        self.bg.forget()
+        self.bg.forget()                           # the rows stay until the new answers come
         self.flash("looking for repos again…")
         self.reload()
 
@@ -407,7 +443,7 @@ class Repos(TableApp):
 
     def edit_roots(self):
         path = gitsrc.ensure_roots_file()
-        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "micro"
+        editor = editor_cmd()
         self.popup("folders the git tab looks in · save and close to apply",
                    f"{editor} {shlex.quote(path)}", "70%", "50%")
 
@@ -434,6 +470,14 @@ class Repos(TableApp):
     def copy(self, text):
         tmuxlink.copy(text)
         self.flash(f"copied: {text}")
+
+
+def editor_cmd():
+    """Your editor ($VISUAL / $EDITOR), else the first of micro, nano, vi that is installed."""
+    for e in (os.environ.get("VISUAL"), os.environ.get("EDITOR"), "micro", "nano", "vi"):
+        if e and shutil.which(e.split()[0]):
+            return e
+    return "vi"
 
 
 if __name__ == "__main__":

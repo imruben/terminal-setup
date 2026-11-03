@@ -114,6 +114,8 @@ class Viewer:
             sources = self.load(self.key, self.tabs[self.tab] if self.tabs else None, w) if self.key else []
         except OSError as e:     # an unreadable file (root's 0600 compose file…): say so, don't crash
             sources = [f"  {YELLOW}cannot read {e.filename or self.key}: {e.strerror}"]
+        except Exception as e:   # anything else: say what, keep the pane alive
+            sources = [f"  {YELLOW}could not show this: {type(e).__name__}: {e}"]
         self.set_lines(sources, w)
         self.loaded_at = time.monotonic()
         if reset:
@@ -334,6 +336,48 @@ class Viewer:
 
     def on_char(self, text):
         """Typed text (viewers with a search box use it)."""
+
+
+class BackgroundViewer(Viewer):
+    """A Viewer whose contents are read in a thread (git on a big repo, DNS, ssh…): the pane
+    keeps answering while they are read, shows what it had (or 'loading…') meanwhile and
+    redraws when they arrive. Subclasses write compute(key, tab, width) instead of load()."""
+
+    def __init__(self, screen):
+        from background import Background
+        self._ready = False
+        self._shown = {}                     # (key, tab) → the last lines shown, while new ones are read
+        self._bgv = Background(self._arrived, fallback=lambda: None)
+        super().__init__(screen)
+
+    def _arrived(self):
+        self._ready = True                   # the next tick (every interval) redraws with them
+
+    def compute(self, key, tab, width):
+        return []
+
+    def _compute(self, key, tab, width):
+        try:
+            return self.compute(key, tab, width)
+        except Exception as e:               # say what, keep the pane alive
+            return [f"  {YELLOW}could not show this: {type(e).__name__}: {e}"]
+
+    def load(self, key, tab, width):
+        k = ("loading", key, tab, width)
+        lines = self._bgv.get(k, lambda: self._compute(key, tab, width), self.refresh_every or 30)
+        if lines is not None:
+            if len(self._shown) > 64:
+                self._shown.clear()
+                self._bgv.drop()
+            self._shown[(key, tab)] = lines
+            return lines
+        return self._shown.get((key, tab)) or [f"  {DIM}loading…"]
+
+    def tick(self):
+        super().tick()
+        if self._ready and self.visible:
+            self._ready = False
+            self.reload()
 
 
 def run(viewer_class):

@@ -85,9 +85,13 @@ build() {
   tmux resize-pane -t "$res" -y $RES_ROWS \
      \; set-hook -w -t "$S:info" window-resized "run-shell -b '$D/info-fit.sh $res $btop $RES_ROWS'"
   "$D/info-fit.sh" "$res" "$btop" "$RES_ROWS"
-  # same for the docker tab: the Containers list keeps a useful height (tmux/system/docker-fit.sh)
-  tmux set-hook -w -t "$S:docker" window-resized "run-shell -b '$D/docker-fit.sh $cont'"
-  "$D/docker-fit.sh" "$cont"
+  # same for the tabs with a list on top: it keeps a useful height (tmux/system/top-fit.sh)
+  local fit tab top pct
+  for fit in "docker $cont 38" "ssh $hosts 42" "git $repos 42"; do
+    read -r tab top pct <<< "$fit"
+    tmux set-hook -w -t "$S:$tab" window-resized "run-shell -b '$D/top-fit.sh $top $pct'"
+    "$D/top-fit.sh" "$top" "$pct"
+  done
   # and Disks keeps the height of its list, Cleanup below gets the rest (tmux/system/disk-fit.sh)
   tmux set-hook -w -t "$S:disk" window-resized "run-shell -b '$D/disk-fit.sh $disks'"
   tmux set -t "$S:" @description "System · info, processes & ports, disk, packages, ssh, docker, git"

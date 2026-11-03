@@ -17,25 +17,27 @@
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sshsrc
 import tmuxlink
-from background import Background
+from background import Background, parallel
 from sshsrc import ago, tilde
 from table import Column, TableApp, run
 from tui import DIM, GREEN, RED, SUB, TEXT, YELLOW
 
 ICON = dict(connect="\U000F0318", popup="\U000F018D", test="\U000F0E1E", tunnel="\U000F0D3F", close="\U000F0156",
             key="\U000F0306", edit="\U000F03EB", add="\U000F0415", copy="\U000F018F", git="\U000F02A2")
-PROBE_EVERY = 30
+PROBE_EVERY = 60         # a TCP connect: sshd logs it, fail2ban and PerSourcePenalties count it
 ACCOUNT_EVERY = 3600
+TEST_KEEP = 300          # a login test or account answer from the menu is shown this long
+LINE_EDITORS = ("micro", "vim", "nvim", "vi", "nano", "emacs", "kak", "hx", "helix")   # take +LINE
 
 
 def session_name(alias):
@@ -50,6 +52,7 @@ class Hosts(TableApp):
     interval = 1.0
     reload_every = 3
     sort_key = "order"
+    search_keys = ("alias", "user", "address", "state", "account", "key")
     columns = [Column("alias", "HOST", 20, min=10),
                Column("user", "USER", 10, optional=True),
                Column("address", "ADDRESS", min=10),
@@ -61,21 +64,32 @@ class Hosts(TableApp):
 
     def __init__(self, screen):
         self.bg = Background(self.wake, fallback=dict)
-        self.pool = ThreadPoolExecutor(max_workers=8)
         self.tests = {}               # dest → (result, problem, when): logins tested from the menu
+        self.extra = {}               # dest from your history → the options of its last command (-p, -i…)
         super().__init__(screen)
 
     # ─── reading ───
-    def resolve_all(self, dests):
-        return dict(zip(dests, self.pool.map(sshsrc.resolve, dests)))
+    def resolve_all(self, dests, extra=None):
+        extra = extra or {}
+        found = parallel(lambda d: sshsrc.resolve(d, extra.get(d, ())), dests)
+        return {d: c or {} for d, c in zip(dests, found)}
 
     def probe_all(self, targets):
         """targets: {dest: (host, port)} → {dest: (ms, problem)}."""
         items = list(targets.items())
-        return dict(zip([d for d, _ in items], self.pool.map(lambda t: sshsrc.probe(*t[1]), items)))
+        found = parallel(lambda t: sshsrc.probe(*t[1]), items)
+        return {d: r or (None, "unknown name") for (d, _), r in zip(items, found)}
 
     def accounts(self, dests):
-        return dict(zip(dests, self.pool.map(sshsrc.git_account, dests)))
+        return {d: r or ("", "failed") for d, r in zip(dests, parallel(sshsrc.git_account, dests))}
+
+    def args(self, r):
+        """The options to reach a host: none for the hosts of ~/.ssh/config, those of its last
+        command for one from your history (ssh -p 2222 root@1.2.3.4 → -p 2222)."""
+        return sshsrc.conn_args(self.extra.get(r["alias"])) if r["history"] else []
+
+    def ssh_cmd(self, r):
+        return " ".join(["ssh", *map(shlex.quote, self.args(r)), shlex.quote(r["alias"])])
 
     def fetch(self):
         stamp = sshsrc.config_stamp()
@@ -90,7 +104,7 @@ class Hosts(TableApp):
             if c.get("hostname"):
                 by_address.setdefault(c["hostname"], a)
         used, extra = {}, {}
-        for when, cmd, prog, dest in hist:
+        for when, cmd, prog, dest, parsed in hist:
             host = sshsrc.host_of(dest)
             alias = host if host in aliases else by_address.get(host)
             if not alias:
@@ -98,10 +112,13 @@ class Hosts(TableApp):
                     continue
                 alias = dest
                 extra[dest] = True
+                self.extra[dest] = parsed             # the last command's options win
             n, last = used.get(alias, (0, None))
             used[alias] = (n + 1, when if when and (last is None or when > last) else last)
         extra_list = sorted(extra)
-        extra_cfgs = self.bg.get(("reading", "history", tuple(extra_list)), lambda: self.resolve_all(extra_list), 300) or {}
+        opts = {d: tuple(sshsrc.conn_args(self.extra.get(d))) for d in extra_list}
+        extra_cfgs = self.bg.get(("reading", "history", tuple(sorted(opts.items()))),
+                                 lambda: self.resolve_all(extra_list, opts), 300) or {}
         cfgs = {**cfgs, **extra_cfgs}
         live = sshsrc.live()
         # who answers (every 30 s) · which account the git hosts see for your key (every hour)
@@ -116,9 +133,19 @@ class Hosts(TableApp):
         by_path = {k["path"]: k for k in sshsrc.keys()}
 
         def locked(c):
+            if c.get("usekeychain") == "yes":           # macOS: the passphrase is in the Keychain
+                return False
             ks = [by_path.get(p) for p in sshsrc.key_files(c)]
             return bool(ks) and all(k and k["encrypted"] and k["fingerprint"] not in held for k in ks)
-        gits = [a for a in aliases if sshsrc.git_service(cfgs.get(a) or {}) and not locked(cfgs.get(a) or {})]
+        for d in [d for d, t in self.tests.items() if time.time() - t[2] > TEST_KEEP]:
+            del self.tests[d]                           # an old answer is not today's
+        def asks_you(c):
+            """A security key (touch it) or another agent (1Password, Bitwarden: approve it) would
+            ask for you even in BatchMode: such hosts are only asked from the menu."""
+            ks = [by_path.get(p) for p in sshsrc.key_files(c)]
+            return any(k and k["type"].endswith("-SK") for k in ks) or c.get("identityagent", "none") not in ("none", "")
+        gits = [a for a in aliases if sshsrc.git_service(cfgs.get(a) or {}) and not locked(cfgs.get(a) or {})
+                and not asks_you(cfgs.get(a) or {})]
         accounts = (self.bg.get(("asking", tuple(gits)), lambda: self.accounts(gits), ACCOUNT_EVERY) or {}) if gits else {}
         rows = []
         for n, dest in enumerate(aliases + extra_list):
@@ -132,6 +159,7 @@ class Hosts(TableApp):
             here = live.get(dest, []) + (live.get(hostname, []) if hostname != dest else [])
             if from_history:
                 here = live.get(sshsrc.host_of(dest), [])
+            here = list({p[0]: p for p in here}.values())     # one process counted once
             ms, problem = probes.get(dest, (None, ""))
             if jump:
                 state, state_sort = f"via {jump}", 2
@@ -158,6 +186,7 @@ class Hosts(TableApp):
                          "account_ok": bool(account), "locked": is_locked,
                          "key": os.path.basename(keys[0]) if keys else "",
                          "keys": keys, "live": here, "open": len(here), "open_txt": str(len(here)) if here else "",
+                         "error": sshsrc.ERRORS.get(dest, ""),
                          "used_t": last, "used": ago(last) if last else ("" if not count else "yes"), "uses": count,
                          "history": from_history, "order": (from_history, n)})
         return rows
@@ -169,6 +198,9 @@ class Hosts(TableApp):
         up = sum(1 for r in self.all if r["ms"] is not None)
         down = sum(1 for r in self.all if r["state"].startswith("✗"))
         sessions = sum(1 for r in self.all for p in r["live"] if p[1] != "tunnel")
+        bad = next((r["error"] for r in self.all if r["error"]), "")
+        if bad:
+            return f"{RED}~/.ssh/config: {bad}"
         tunnels = sum(1 for r in self.all for p in r["live"] if p[1] == "tunnel")
         parts = [f"{GREEN}{up} answer"] if up else []
         if down:
@@ -193,6 +225,8 @@ class Hosts(TableApp):
 
     def detail(self, r):
         c = r["cfg"]
+        if r["error"]:
+            return f"{RED}ssh -G {r['alias']}: {r['error']}"
         if not c:
             return f"{DIM}reading what ssh would do…"
         user = f"{c.get('user')}@" if c.get("user") else ""
@@ -202,7 +236,8 @@ class Hosts(TableApp):
         via = f" · via {r['jump']}" if r["jump"] else ""
         used = f" · last used {r['used']} ago" if r["used_t"] else (" · never used from this shell" if not r["uses"] else "")
         hist = f"{DIM} · {YELLOW}not in ~/.ssh/config (from your history){DIM}" if r["history"] else ""
-        return f"{TEXT}ssh {r['alias']}{DIM} → {user}{r['address']}{via}{key}{used}{hist}"
+        why = f" · {RED}{r['problem']}{DIM}" if r["problem"] and r["ms"] is None else ""
+        return f"{TEXT}{self.ssh_cmd(r)}{DIM} → {user}{r['address']}{via}{why}{key}{used}{hist}"
 
     def menu_title(self, r):
         return r["alias"]
@@ -216,21 +251,23 @@ class Hosts(TableApp):
         items = []
         if not git:
             items += [(f"{ICON['connect']}  Connect (session {session_name(r['alias'])})", "o", lambda: self.connect(r)),
-                      (f"{ICON['popup']}  Connect in a popup", "p", lambda: self.popup(f"ssh {r['alias']} · exit closes",
-                                                                                     "ssh " + shlex.quote(r["alias"]), "95%", "90%")),
+                      (f"{ICON['popup']}  Connect in a popup", "p", lambda: self.popup(
+                          f"ssh {r['alias']} · exit closes", f"{self.ssh_cmd(r)}; [ $? -eq 255 ] && "
+                          f"{{ printf '\\n  ssh could not connect · press Enter'; read -r _; }}", "95%", "90%", env=self.env())),
                       (f"{ICON['test']}  Test the login (no password asked)", "l", lambda: self.test(r)),
                       (f"{ICON['tunnel']}  Open a tunnel…", "n", lambda: self.ask_tunnel(r))]
-            for pid, kind, args in r["live"]:
+            for pid, kind, args, fwd in r["live"]:
                 if kind == "tunnel":
-                    fwd = " ".join(re.findall(r"-[LRD]\s*(\S+)", args)) or f"pid {pid}"
-                    items.append((f"{ICON['close']}  Close the tunnel {fwd}", "", lambda pid=pid: self.close_tunnel(r, pid)))
+                    what = " ".join(f.split(" ", 1)[1] for f in fwd) or f"pid {pid}"
+                    items.append((f"{ICON['close']}  Close the tunnel {what}", "",
+                                  lambda pid=pid, args=args: self.close_tunnel(r, pid, args)))
             items.append((f"{ICON['key']}  Install your key on it (ssh-copy-id)…", "k", lambda: self.copy_id(r)))
         else:
             items += [(f"{ICON['git']}  Which {r['service']} account is this key?", "w", lambda: self.ask_account(r)),
                       (f"{ICON['popup']}  ssh -T in a popup", "p",
                        lambda: self.popup(f"ssh -T git@{r['alias']}", f"ssh -T git@{shlex.quote(r['alias'])}; printf '\\npress Enter'; read",
                                           "70%", "40%"))]
-        block = next((b for a, b in sshsrc.concrete_hosts() if a == r["alias"]), None)
+        block = None if r["history"] else next((b for a, b in sshsrc.concrete_hosts() if a == r["alias"]), None)
         items += [("", "", None),
                   (f"{ICON['edit']}  Edit ~/.ssh/config" + (f" (line {block['line']})" if block else ""), "e",
                    lambda: self.edit(block)),
@@ -255,10 +292,10 @@ class Hosts(TableApp):
         """A session of its own, named after the host: connecting again goes back to it.
         When ssh itself fails (255: no answer, key refused…) the pane waits so you can read why."""
         name = session_name(r["alias"])
-        dest = shlex.quote(r["alias"])
         if subprocess.run(["tmux", "has-session", "-t", f"={name}"], capture_output=True).returncode:
-            cmd = (f"ssh {dest}; [ $? -eq 255 ] && {{ printf '\\n  ssh could not connect · press Enter to close'; read -r _; }}")
-            subprocess.run(["tmux", "new-session", "-d", "-s", name, "-c", os.path.expanduser("~"), cmd],
+            cmd = (f"{self.ssh_cmd(r)}; [ $? -eq 255 ] && {{ printf '\\n  ssh could not connect · press Enter to close'; read -r _; }}")
+            env = [a for k, v in self.env().items() for a in ("-e", f"{k}={v}")]
+            subprocess.run(["tmux", "new-session", "-d", "-s", name, *env, "-c", os.path.expanduser("~"), cmd],
                            capture_output=True)
             subprocess.run(["tmux", "set", "-t", f"{name}:", "@description", f"ssh {r['alias']} · {r['address']}"],
                            capture_output=True)
@@ -288,7 +325,7 @@ class Hosts(TableApp):
             problem = self.explain(r, problem)
             self.tests[r["alias"]] = (ok, "key locked" if problem.startswith("key locked") else problem, time.time())
             self.flash(f"{r['alias']}: the login works with your key" if ok else f"{r['alias']}: {problem}", ok=bool(ok))
-        self.run_bg(r, "testing", lambda: sshsrc.test_login(r["alias"]), done)
+        self.run_bg(r, "testing", lambda: sshsrc.test_login_args(self.args(r), r["alias"]), done)
 
     def ask_account(self, r):
         def done(result):
@@ -314,19 +351,27 @@ class Hosts(TableApp):
         """ssh -f -N in the background: it detaches once the tunnel works, so a failure (port in
         use, key refused, a key that needs its passphrase) comes back as a message."""
         argv = ["ssh", "-f", "-N", "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
-                "-L", f"{local}:localhost:{remote}", r["alias"]]
+                *self.args(r), "-L", f"{local}:localhost:{remote}", r["alias"]]
+        own = r["cfg"].get("localforward", [])
 
         def done(result):
             rc, out, err = result
             if rc == 0:
                 self.flash(f"localhost:{local} → {r['alias']}:{remote} · right-click → Close the tunnel to stop it")
             else:
-                why = "the port is in use here" if "Address already in use" in err or "cannot listen" in err \
-                    else sshsrc.login_problem(err)
+                busy = "Address already in use" in err or "cannot listen" in err
+                why = ("the port is in use here" + (f" (the host's config also forwards {', '.join(own)})" if own else "")
+                       if busy else self.explain(r, sshsrc.login_problem(err)))
                 self.flash(f"tunnel to {r['alias']}: {why}", ok=False)
         self.run_bg(r, "opening tunnel", lambda: sshsrc.run(argv, timeout=20), done)
 
-    def close_tunnel(self, r, pid):
+    def close_tunnel(self, r, pid, args):
+        """Only if that pid is still the same tunnel (a pid is reused once its process ends)."""
+        still = any(p[0] == pid and p[2] == args for ps in sshsrc.live().values() for p in ps)
+        if not still:
+            self.flash("that tunnel is not open any more")
+            self.reload()
+            return
         try:
             os.kill(pid, 15)
             self.flash(f"tunnel to {r['alias']} closed")
@@ -340,9 +385,11 @@ class Hosts(TableApp):
         if not os.path.exists(pub):
             self.flash("no public key to install: create one in the Keys pane", ok=False)
             return
-        self.popup(f"ssh-copy-id · {r['alias']}",
-                   f"ssh-copy-id -i {shlex.quote(pub)} {shlex.quote(r['alias'])}; printf '\\npress Enter'; read -r _",
-                   "80%", "50%")
+        port = [a for a in self.args(r) if a]               # ssh-copy-id takes -p and -o like ssh
+        self.popup(f"ssh-copy-id · {tilde(pub)} → {r['alias']}",
+                   f"printf '  installs {shlex.quote(tilde(pub))}\\n\\n'; ssh-copy-id -i {shlex.quote(pub)} "
+                   f"{' '.join(map(shlex.quote, port))} {shlex.quote(r['alias'])}; printf '\\npress Enter'; read -r _",
+                   "80%", "50%", env=self.env())
 
     def edit(self, block):
         path = block["file"] if block else sshsrc.CONFIG
@@ -351,38 +398,85 @@ class Hosts(TableApp):
             with open(path, "a"):
                 pass
             os.chmod(path, 0o600)
-        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "micro"
-        line = f"+{block['line']} " if block else ""
+        editor = next((e for e in (os.environ.get("VISUAL"), os.environ.get("EDITOR"), "micro", "nano", "vi")
+                       if e and shutil.which(e.split()[0])), "vi")
+        takes_line = os.path.basename(editor.split()[0]) in LINE_EDITORS
+        line = f"+{block['line']} " if block and takes_line else ""
         self.popup(f"{tilde(path)} · save and close to apply", f"{editor} {line}{shlex.quote(path)}", "80%", "70%")
 
     def ask_add(self):
         def add(text):
-            m = re.fullmatch(r"([\w.\-]+)\s+(?:([\w.\-]+)@)?([\w.\-:\[\]]+?)(?::(\d+))?", text.strip())
+            m = re.fullmatch(r"([\w.\-]+)\s+(?:([\w.\-]+)@)?(\S+)", text.strip())
             if not m:
                 if text:
-                    self.flash("write: NAME user@address[:port]  (e.g. web root@203.0.113.7:2222)", ok=False)
+                    self.flash("write: NAME user@address[:port]  (e.g. web root@203.0.113.7:2222, [2001:db8::1]:22)", ok=False)
                 return
-            name, user, address, port = m.groups()
+            name, user, where = m.groups()
+            port = ""
+            v6 = re.fullmatch(r"\[([0-9a-fA-F:.%\w]+)\](?::(\d+))?", where)
+            if v6:                                  # [2001:db8::1]:2222
+                address, port = v6[1], v6[2] or ""
+            elif where.count(":") == 1:             # host:port
+                address, port = where.split(":")
+                if not port.isdigit():
+                    self.flash(f"{port} is not a port", ok=False)
+                    return
+            else:                                   # a name, an IPv4, or a bare IPv6 (no port)
+                address = where
             if name in [a for a, _ in sshsrc.concrete_hosts()]:
                 self.flash(f"{name} is already in ~/.ssh/config", ok=False)
                 return
-            block = f"\nHost {name}\n    HostName {address}\n" + (f"    User {user}\n" if user else "") + \
-                    (f"    Port {port}\n" if port and port != "22" else "")
-            path = sshsrc.CONFIG
-            os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-            new = not os.path.exists(path)
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(block.lstrip("\n") if new else block)
-            if new:
-                os.chmod(path, 0o600)
-            self.flash(f"added {name} to ~/.ssh/config")
-            self.bg.forget()
+            block = [f"Host {name}", f"    HostName {address}"] + ([f"    User {user}"] if user else []) + \
+                    ([f"    Port {port}"] if port and port != "22" else [])
+            try:
+                add_block(block)
+            except OSError as e:
+                self.flash(f"could not write ~/.ssh/config: {e.strerror}", ok=False)
+                return
+            check = sshsrc.resolve(name)
+            if user and check.get("user") != user or (port and port != "22" and check.get("port") != port):
+                self.flash(f"added {name}, but an earlier block wins for some options: Edit ~/.ssh/config", ok=False)
+            else:
+                self.flash(f"added {name} to ~/.ssh/config")
             self.reload()
         self.ask_text("New host · NAME user@address[:port]:", "", add)
+
+    def env(self):
+        """The agent this pane sees (popups and sessions start with tmux's environment)."""
+        sock = sshsrc.ssh_env().get("SSH_AUTH_SOCK")
+        return {"SSH_AUTH_SOCK": sock} if sock else {}
 
     def copy(self, text):
         tmuxlink.copy(text)
         self.flash(f"copied: {text}")
+
+
+def add_block(lines):
+    """Put a Host block in ~/.ssh/config before the first block that applies to many hosts
+    (Host *, Host *.corp, Match): ssh takes the first value it finds, so after them it would
+    lose its User, Port… · a new file is made with mode 600."""
+    path = sshsrc.CONFIG
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    try:
+        with open(path, encoding="utf-8") as f:
+            old = f.read().splitlines()
+    except FileNotFoundError:
+        old = []
+    at = len(old)
+    for n, line in enumerate(old):
+        key, value = sshsrc._kv(line.strip()) if line.strip() and not line.strip().startswith("#") else ("", "")
+        if key.lower() == "match" or (key.lower() == "host" and any(c in value for c in "*?!")):
+            at = n
+            while at > 0 and old[at - 1].strip().startswith("#"):    # its comment stays with it
+                at -= 1
+            break
+    new = old[:at] + ([""] if at and old[at - 1].strip() else []) + lines + ([""] if at < len(old) else []) + old[at:]
+    target = os.path.realpath(path)             # through a link (dotfiles): the real file changes
+    tmp = target + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(new).rstrip("\n") + "\n")
+    os.chmod(tmp, (os.stat(target).st_mode & 0o777) if os.path.exists(target) else 0o600)
+    os.replace(tmp, target)
 
 
 if __name__ == "__main__":

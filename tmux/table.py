@@ -109,6 +109,9 @@ class TableApp:
 
     # When True, typing does not filter locally: fetch() reads self.query itself (a search box)
     remote_query = False
+    # the fields typing filters on (None: every text or number field of a row, not paths
+    # kept for actions, flags or objects; a pane names its own when that matches too much)
+    search_keys = None
 
     # Master of a master/detail layout (Containers → details + logs, package lists → Package):
     # hovering only highlights; the row shown in the detail panes (marked ▌) changes on a
@@ -169,18 +172,28 @@ class TableApp:
 
     def reload(self):
         self.reloaded_at = time.monotonic()
-        self.all = self.fetch()
+        try:
+            self.all = self.fetch()
+        except Exception as e:                   # keep the last rows and say what went wrong
+            self.flash(f"could not read: {type(e).__name__}: {e}", ok=False)
         self.loaded = True
         self.apply()
 
     def apply(self):
         words = [] if self.remote_query else self.query.lower().split()
 
+        keys = self.search_keys
+
+        def text(r):
+            items = ((k, r.get(k)) for k in keys) if keys else r.items()
+            return " ".join(str(v) for k, v in items if k != "id" and isinstance(v, (str, int, float))
+                            and not isinstance(v, bool)).lower()
+
         def match(r, w):            # "pid=123" (sent by another pane) is that field exactly
             key, eq, value = w.partition("=")
             if eq and key in r and key != "id":
                 return str(r[key]).lower() == value
-            return w in " ".join(str(v) for k, v in r.items() if k != "id").lower()
+            return w in text(r)
         rows = [r for r in self.all if self.keep(r) and all(match(r, w) for w in words)]
         rows.sort(key=lambda r: (r.get(self.sort_key) is None, r.get(self.sort_key)), reverse=self.sort_desc)
         if self.sort_desc:   # keep empty values last when reversing
@@ -239,7 +252,7 @@ class TableApp:
         rest = max(4, avail - sum(widths[c.key] + 1 for c in cols if c.width) - len(flex))
         for c in flex:
             widths[c.key] = max(4, rest // max(1, len(flex)))
-        self.visible, self.widths = cols, widths
+        self.cols_shown, self.widths = cols, widths
         x, self.col_spans = 3, {}
         for c in cols:
             self.col_spans[c.key] = (x, x + self.widths[c.key] - 1)
@@ -256,7 +269,7 @@ class TableApp:
 
     def cells(self, row):
         out = []
-        for c in self.visible:
+        for c in self.cols_shown:
             v = row.get(c.key)
             t = "" if v is None else c.fmt(v)
             t = ellipsis(t, self.widths[c.key])
@@ -306,7 +319,7 @@ class TableApp:
                  + (ACTIVE_ZOOM if zoomed else SURFACE + SUB) + zb]
 
         titles = "  "
-        for c in self.visible:
+        for c in self.cols_shown:
             arrow = (" ▼" if self.sort_desc else " ▲") if c.sort == self.sort_key else ""
             t = ellipsis(c.title + arrow, self.widths[c.key])
             t = pad(t, self.widths[c.key], right=c.align == "r")
@@ -344,7 +357,7 @@ class TableApp:
             label, text, _ = self.prompt
             return (f" {ACCENT}{label} {RESET}{TEXT}{text}{RESET}{YELLOW}▏{RESET}  {DIM}enter save · esc cancel")
         if self.ask:
-            q = f" {RED}{BOLD}{self.ask[0]}{RESET}  "
+            q = f" {RED}{BOLD}{ellipsis(self.ask[0], max(10, self.w - 21))}{RESET}  "
             yes, no = f"{DANGER_BG}{CRUST}{BOLD} y  yes {RESET}", f"{SURFACE}{TEXT} n  no {RESET}"
             x = vlen(q) + 1
             self.buttons["yes"] = (y, x, x + 7)
@@ -367,17 +380,18 @@ class TableApp:
         """Type a line in the footer; on_submit(text) on Enter."""
         self.menu, self.prompt = None, [label, text, on_submit]
 
-    def background(self, row, doing, argv, done):
-        """Run argv without freezing the pane; done(ok, output) when it finishes.
-        The row shows `doing` meanwhile."""
+    def background(self, row, doing, argv, done, timeout=120):
+        """Run argv without freezing the pane; done(ok, output) when it finishes (timeout None:
+        no limit, for work that may take long, like deleting a big tree). The row shows `doing`."""
         self.busy[row["id"]] = doing
 
         def work():
             try:
-                res = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+                res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
+                                     stdin=subprocess.DEVNULL, errors="replace")
                 ok, out = res.returncode == 0, (res.stdout + res.stderr).strip()
             except (subprocess.TimeoutExpired, OSError) as e:
-                ok, out = False, f"{argv[0]}: {'no answer after 2 min' if isinstance(e, subprocess.TimeoutExpired) else e.strerror}"
+                ok, out = False, f"{argv[0]}: {'no answer in time' if isinstance(e, subprocess.TimeoutExpired) else e.strerror}"
             finally:
                 self.busy.pop(row["id"], None)
             done(ok, out)
@@ -388,10 +402,11 @@ class TableApp:
         """Ask the event loop to refresh now (used by background work)."""
         os.kill(os.getpid(), __import__("signal").SIGWINCH)
 
-    def popup(self, title, command, w="90%", h="80%"):
-        """Open a tmux popup over this pane (logs, a shell, apt…)."""
+    def popup(self, title, command, w="90%", h="80%", env=None):
+        """Open a tmux popup over this pane (logs, a shell, apt…) · env: {VAR: value} it gets."""
+        extra = [a for k, v in (env or {}).items() for a in ("-e", f"{k}={v}")]
         subprocess.Popen(["tmux", "display-popup", "-E", "-w", w, "-h", h, "-b", "rounded", "-S", "fg=#89b4fa",
-                          "-T", f"#[align=centre,fg=#89b4fa,bold] {title} ", command],
+                          *extra, "-T", f"#[align=centre,fg=#89b4fa,bold] {title.replace('#', '##')} ", command],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     # ─── input ───
@@ -560,7 +575,7 @@ class TableApp:
                 self.touched = True
                 self.ensure_visible()
         elif name in ("left", "right"):                  # sort by the previous / next column
-            cols = getattr(self, "visible", None) or self.columns
+            cols = getattr(self, "cols_shown", None) or self.columns
             at = next((n for n, c in enumerate(cols) if c.sort == self.sort_key), -1)
             c = cols[(at + (1 if name == "right" else -1)) % len(cols)]
             self.sort_key, self.sort_desc = c.sort, c.desc

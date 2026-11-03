@@ -17,6 +17,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import disksrc
 import tmuxlink
+from background import Background
 from disksrc import bar, human
 from table import Column, TableApp, run
 from tui import DIM, RED, TEXT, YELLOW
@@ -31,9 +32,10 @@ class Disks(TableApp):
     noun = "disks"
     interval = 10.0
     sort_key = "order"
+    search_keys = ("label", "mount", "type", "device")
     columns = [Column("label", "DISK", 13, min=8),
-               Column("pct_txt", "USE", 4, "r", sort="pct", desc=True),
-               Column("bar", "", 10, sort="pct", desc=True, optional=True),
+               Column("pct_txt", "USE", 5, "r", sort="pct", desc=True),
+               Column("bar", "", 10, sort="pct_bar", desc=True, optional=True),
                Column("used_txt", "USED", 7, "r", sort="used", desc=True),
                Column("free_txt", "FREE", 7, "r", sort="free", desc=True),
                Column("size_txt", "SIZE", 7, "r", sort="size", desc=True, optional=True),
@@ -44,13 +46,21 @@ class Disks(TableApp):
     def __init__(self, screen):
         self.rows_seen = None
         self.changed_seen = None
+        self.bg = Background(self.wake, fallback=list)
+        self.last = []
         super().__init__(screen)
 
     def fetch(self):
+        # df in the background: a network drive that does not answer must not freeze the pane;
+        # an empty answer (df timed out) keeps the last good rows
+        found = self.bg.get(("reading",), disksrc.mounts, 8) or []
+        if found:
+            self.last = found
         rows = []
-        for n, d in enumerate(disksrc.mounts()):
+        for n, d in enumerate(self.last):
             pct = d["used"] / (d["used"] + d["free"]) if d["used"] + d["free"] else 0
-            rows.append({**d, "id": d["mount"], "pct": pct, "pct_txt": f"{pct * 100:.0f}%", "bar": bar(pct, 10),
+            rows.append({**d, "id": d["mount"], "pct": pct, "pct_bar": pct, "pct_txt": f"{pct * 100:.0f}%",
+                         "bar": bar(pct, 10),
                          "used_txt": human(d["used"]), "free_txt": human(d["free"]), "size_txt": human(d["size"]),
                          "order": n})
         if len(rows) != self.rows_seen:            # keep the pane as tall as its list
@@ -66,11 +76,17 @@ class Disks(TableApp):
         stamp = self.opts.get("@disk-changed")
         if stamp != self.changed_seen:
             self.changed_seen = stamp
+            self.bg.forget()
             self.reload()
 
     def summary(self):
         free = sum(r["free"] for r in self.all if r["mount"] in ("/", "/System/Volumes/Data"))
-        return f"{TEXT}{human(free)} free{DIM} on the system disk" if free else ""
+        if not free:
+            return ""
+        c = next((r for r in self.all if r["mount"] == "/mnt/c"), None)
+        if disksrc.WSL and c and c["free"] < free:      # the WSL disk is a file on C: it cannot outgrow it
+            return f"{TEXT}{human(c['free'])} free{DIM} for WSL (what C: has left)"
+        return f"{TEXT}{human(free)} free{DIM} on the system disk"
 
     def row_colour(self, r):
         return RED if r["pct"] >= 0.9 else YELLOW if r["pct"] >= 0.75 else TEXT

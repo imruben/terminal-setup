@@ -136,7 +136,8 @@ class Menu:
 
     def __init__(self, title, items, x, y, screen_h, screen_w):
         self.title, self.items = title, items
-        self.inner = max([len(title) + 4] + [len(l) + len(k) + 5 for l, k, _ in items])
+        # never wider than the pane (long file names, paths): titles and labels are cut to fit
+        self.inner = min(max([vlen(title) + 4] + [vlen(l) + len(k) + 5 for l, k, _ in items]), max(12, screen_w - 2))
         self.w = self.inner + 2
         self.rows = max(1, min(len(items), screen_h - 2))      # item rows shown
         self.h = self.rows + 2
@@ -174,9 +175,9 @@ class Menu:
 
     def draw(self):
         border = ACCENT
-        t = f" {self.title} "
-        left = (self.inner - len(t)) // 2
-        right = "─" * (self.inner - left - len(t))
+        t = f" {ellipsis(self.title, self.inner - 2)} "
+        left = (self.inner - vlen(t)) // 2
+        right = "─" * (self.inner - left - vlen(t))
         if self.more_above():
             right = right[:-4] + f"{RESET}{TEXT} ▲ {RESET}{border}─" if len(right) >= 5 else right
         out = [f"\x1b[{self.y};{self.x}H{border}╭{'─' * left}{BOLD}{t}{RESET}{border}{right}╮"]
@@ -188,7 +189,8 @@ class Menu:
                 out.append(pos + f"{border}├{'─' * self.inner}┤")
                 continue
             keytxt = f"({key})" if key else ""
-            text = f" {label}".ljust(self.inner - len(keytxt) - 1) + keytxt + " "
+            room = self.inner - len(keytxt) - 1
+            text = pad(ellipsis(f" {label}", room), room) + keytxt + " "
             style = SELECTED if n == self.cur else (TEXT if action else DIM)
             out.append(pos + f"{border}│{RESET}{style}{text}{RESET}{border}│")
         bottom = "─" * self.inner
@@ -351,7 +353,7 @@ SEQS = {b"\x1b[A": "up", b"\x1bOA": "up", b"\x1b[B": "down", b"\x1bOB": "down",
         b"\x1b[F": "end", b"\x1b[4~": "end", b"\x1b[3~": "delete", b"\x1b[Z": "btab"}
 CTRL = {b"\r": "enter", b"\n": "enter", b"\x7f": "backspace", b"\x08": "backspace", b"\t": "tab",
         b"\x1b": "esc", b"\x15": "ctrl-u", b"\x03": "ctrl-c", b"\x04": "ctrl-d", b"\x05": "ctrl-e",
-        b"\x0e": "ctrl-n", b"\x12": "ctrl-r", b"\x18": "ctrl-x", b"\x14": "ctrl-t"}
+        b"\x0e": "ctrl-n", b"\x12": "ctrl-r", b"\x18": "ctrl-x", b"\x14": "ctrl-t", b"\x13": "ctrl-s"}
 
 
 CUT_SEQ = re.compile(rb"\x1b(?:\[[0-9;<?]*|O)?")

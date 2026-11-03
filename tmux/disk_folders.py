@@ -31,14 +31,46 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 ICON = dict(dir="\U000F024B", file="\U000F0214", link="\U000F0339", up="\U000F005D", open="\U000F0770",
             app="\U000F03D6", term="\U000F018D", measure="\U000F0450", copy="\U000F018F", delete="\U000F0A7A",
             home="\U000F02DC", disk="\U000F02CA")
-STALE = 600            # a measure older than this (seconds) is done again when the folder is shown
+STALE = 1800           # a measure older than this (seconds) is done again when you go to the folder
+RUNS = (".exe", ".bat", ".cmd", ".com", ".lnk", ".ps1", ".vbs", ".msi", ".desktop", ".command", ".app", ".sh",
+        ".appimage", ".jar", ".scr", ".url", ".pkg")
+
+
+def same(a, b):
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
 
 
 def protected(path):
-    """Folders the Delete item never offers: /, your home, the ones right under / and mount points."""
+    """Folders the Delete item never offers, whatever the way you reached them (by inode, not
+    only by name): /, your home and its parent, the folders right under / or under any mounted
+    disk, mount points, Windows' own folders and users in WSL, ~/Library and the system's
+    folders on macOS."""
     path = path.rstrip("/") or "/"
-    return path in ("/", disksrc.HOME, os.path.dirname(disksrc.HOME)) or path.count("/") <= 1 or os.path.ismount(path) \
-        or path in ("/System/Volumes/Data", "/Users", "/Applications", "/Library")
+    home = disksrc.HOME
+    if path.count("/") <= 1 or same(path, home) or same(path, os.path.dirname(home)) or os.path.ismount(path):
+        return True
+    parent = os.path.dirname(path)
+    if os.path.ismount(parent) or parent in disksrc.mount_points():
+        return True                                  # right under a disk: C:\Windows, /Volumes/USB/…
+    if disksrc.WSL and len(path.split("/")) <= 5 and path.split("/")[1:2] == ["mnt"]:
+        parts = path.split("/")                      # /mnt/c/Users/me · /mnt/c/Program Files…
+        if len(parts) >= 4 and parts[3] in ("Users", "Windows", "Program Files", "Program Files (x86)", "ProgramData"):
+            return True
+    if disksrc.MACOS:
+        data = "/System/Volumes/Data"
+        if path in (data, data + "/Users", data + "/Applications", data + "/Library", data + "/private",
+                    os.path.join(home, "Library"), "/Users", "/Applications", "/Library", "/private", "/opt/homebrew") \
+                or os.path.dirname(path) in ("/Users", data + "/Users"):
+            return True
+    return False
+
+
+def shown(name):
+    """A file name as text that cannot move the cursor or set colours (control characters → ?)."""
+    return "".join("?" if ord(c) < 32 or ord(c) == 127 else c for c in name)
 
 
 UNSET = object()
@@ -51,6 +83,7 @@ class Folders(TableApp):
     interval = 1.0
     reload_every = 2
     sort_key = "size"
+    search_keys = ("name",)
     columns = [Column("name_txt", "NAME", sort="name", min=12),
                Column("size", "SIZE", 7, "r", desc=True, fmt=human),
                Column("share", "SHARE", 16, sort="frac", desc=True, min=10),
@@ -61,7 +94,10 @@ class Folders(TableApp):
         self.path = disksrc.HOME
         self.measures = []          # newest first: the folders measured so far (each with its sizes)
         self.listing = {}           # folder → (its mtime, entries)
-        self.changed_seen = UNSET       # the first look only notes the value
+        self.changed_seen = UNSET   # the first look only notes the value
+        self.my_stamp = None        # the @disk-changed this pane wrote (its own deletes need no re-measure)
+        self.deleted = []           # (row, ok, output) of deletes that finished: handled on the UI thread
+        self.total, self.error = 0, ""
         super().__init__(screen)
 
     # ─── measuring ───
@@ -74,37 +110,43 @@ class Folders(TableApp):
 
     def ensure_measured(self, path, again=False):
         """The measure that answers for path, starting one when there is none, it is older
-        than STALE, or path is another disk mounted inside the measured folder."""
+        than STALE, or du did not reach path (another disk mounted here, a folder made later)."""
+        if not os.path.isdir(path):
+            return self.measure_for(path)
         m = self.measure_for(path)
         if m and not again:
             if not m.done:
                 return m                              # still running: its sizes fill in
-            fresh = time.time() - m.finished < STALE
-            if path in m.sizes and fresh:
+            if path in m.sizes and time.time() - (m.finished or 0) < STALE:
                 return m
-            if path not in m.sizes and not os.path.ismount(path):
-                return m                              # unreadable for du: measuring again would not help
+            if path not in m.sizes and m.partial(path):
+                return m                              # no permission: measuring again would not help
         for old in self.measures:
-            if not old.done and not old.covers(path):
-                old.cancel()                          # measuring somewhere you left: stop it
+            if not old.done and (not old.covers(path) or old.root == path):
+                old.cancel()                          # measuring somewhere you left (or this again)
         m = Measure(path, self.wake)
         self.measures.insert(0, m)
         return m
 
     def prune(self):
-        """Older measures stay as a fallback while a newer one runs, then go."""
+        """Older measures stay as a fallback while a newer one runs, then go (and stop)."""
         keep = []
         for m in self.measures:
             newer_done = any(n.done and not n.cancelled and n.covers(m.root) for n in keep)
-            if not newer_done and not (m.cancelled and m.done and keep):
-                keep.append(m)
-        self.measures = keep[:12]
+            if newer_done or (m.cancelled and keep):
+                m.cancel()
+                continue
+            keep.append(m)
+        for m in keep[8:]:
+            m.cancel()
+        self.measures = keep[:8]
 
     def size_of(self, path):
         """(bytes or None, measure) of a folder from the newest measure that has it."""
         for m in self.measures:
-            if path in m.sizes:
-                return m.sizes[path], m
+            size = m.sizes.get(path)
+            if size is not None:
+                return size, m
         return None, self.measure_for(path)
 
     # ─── reading ───
@@ -133,42 +175,46 @@ class Folders(TableApp):
         return out
 
     def fetch(self):
+        self.handle_deleted()
+        if not os.path.isdir(self.path):              # deleted from elsewhere: the nearest folder left
+            p = self.path
+            while p != "/" and not os.path.isdir(p):
+                p = os.path.dirname(p)
+            self.flash(f"{disksrc.short(self.path)} is gone: showing {disksrc.short(p)}", ok=False)
+            self.path = p
         path = self.path
         self.prune()
         m = self.ensure_measured(path)
         found = self.entries(path)
-        if found is None:
-            self.error = f"cannot read {tilde(path)}"
-            found = []
-        else:
-            self.error = ""
+        self.error = f"cannot read {tilde(path)}" if found is None else ""
         rows, total = [], 0
-        for name, full, st in found:
+        done = bool(m and m.done)
+        for name, full, st in found or []:
             is_dir = stat.S_ISDIR(st.st_mode)
             is_link = stat.S_ISLNK(st.st_mode)
             if is_dir:
                 size, _ = self.size_of(full)
-                other_disk = size is None and m.done and os.path.ismount(full)
+                other_disk = size is None and done and os.path.ismount(full)
             else:
                 size = st.st_blocks * 512 if hasattr(st, "st_blocks") else st.st_size     # on disk, like du
                 other_disk = False
             total += size or 0
             icon = ICON["link"] if is_link else ICON["dir"] if is_dir else ICON["file"]
-            rows.append({"id": full, "name": name, "name_txt": f"{icon} {name}{'/' if is_dir else ''}",
+            rows.append({"id": full, "name": shown(name), "name_txt": f"{icon} {shown(name)}{'/' if is_dir else ''}",
                          "path": full, "dir": is_dir, "link": is_link, "size": size, "mtime": st.st_mtime,
                          "mtime_txt": ago(st.st_mtime), "other_disk": other_disk,
-                         "partial": is_dir and m.partial(full)})
+                         "partial": bool(is_dir and m and m.partial(full))})
         own, _ = self.size_of(path)
-        self.total = own if own else total
+        self.total = own if own and done else total     # while measuring: what is known so far
         for r in rows:
             frac = (r["size"] or 0) / self.total if self.total else 0
             r["frac"] = frac if r["size"] is not None else None
             r["share"] = (f"{bar(frac, 10)} {frac * 100:3.0f}%" if r["size"] is not None else
-                          ("other disk" if r["other_disk"] else "…" if not m.done else "?"))
+                          ("other disk" if r["other_disk"] else "…" if not done else "?"))
         if path != "/":
             rows.append({"id": "..", "name": "..", "name_txt": f"{ICON['up']} ..", "path": os.path.dirname(path),
-                         "dir": True, "link": False, "size": None, "frac": None, "mtime": None, "mtime_txt": "", "share": "",
-                         "other_disk": False, "partial": False})
+                         "dir": True, "link": False, "size": None, "frac": None, "mtime": None, "mtime_txt": "",
+                         "share": "", "other_disk": False, "partial": False})
         return rows
 
     def order(self, rows):
@@ -184,9 +230,10 @@ class Folders(TableApp):
     def summary(self):
         m = self.measure_for(self.path)
         where = f"{TEXT}{disksrc.short(self.path)}"
-        size = f"{DIM} · {human(self.total)}" if getattr(self, "total", 0) else ""
         if m and not m.done:
+            size = f"{DIM} · ≥ {human(self.total)}" if self.total else ""
             return f"{where}{size}{DIM} · {YELLOW}measuring… {m.count:,} folders"
+        size = f"{DIM} · {human(self.total)}" if self.total else ""
         if m and m.finished:
             part = f" · {YELLOW}some folders unreadable{DIM}" if m.partial(self.path) else ""
             return f"{where}{size}{DIM}{part} · measured {ago(m.finished)} ago"
@@ -202,10 +249,10 @@ class Folders(TableApp):
     def detail(self, r):
         if r["id"] == "..":
             return f"{DIM}up to {tilde(r['path'])} · or Backspace"
-        bits = [f"{TEXT}{tilde(r['path'])}"]
+        bits = [f"{TEXT}{shown(tilde(r['path']))}"]
         if r["link"]:
             try:
-                bits.append(f"{DIM}→ {os.readlink(r['path'])}")
+                bits.append(f"{DIM}→ {shown(os.readlink(r['path']))}")
             except OSError:
                 pass
         if r["size"] is not None:
@@ -220,7 +267,7 @@ class Folders(TableApp):
         return f"{DIM} · ".join(bits)
 
     def footer(self, y):
-        if getattr(self, "error", "") and not (self.ask or self.prompt or self.msg):
+        if self.error and not (self.ask or self.prompt or self.msg):
             return f" {RED}{self.error}"
         return super().footer(y)
 
@@ -229,10 +276,13 @@ class Folders(TableApp):
 
     # ─── moving around ───
     def go(self, path):
-        path = os.path.abspath(path)
+        path = os.path.realpath(os.path.abspath(path))   # a link to a folder: the folder itself
         if not os.path.isdir(path):
-            self.flash(f"{tilde(path)} is not a folder", ok=False)
+            self.flash(f"{disksrc.short(path)} is not a folder", ok=False)
             return
+        for m in self.measures:                         # leaving a folder still being measured: stop it
+            if not m.done and not m.covers(path) and not (m.root.startswith(path.rstrip("/") + "/")):
+                m.cancel()
         came_from = self.path
         self.path = path
         self.query = ""
@@ -240,6 +290,7 @@ class Folders(TableApp):
         self.reload()
         if os.path.dirname(came_from) == path:          # going up: stay on the folder you came from
             self.cur_id = self.sel_id = came_from
+            self.touched = True
             self.ensure_visible()
 
     def up(self):
@@ -255,7 +306,7 @@ class Folders(TableApp):
         if stamp != self.changed_seen:
             first = self.changed_seen is UNSET
             self.changed_seen = stamp
-            if not first and stamp:                     # something was cleaned: measure again
+            if not first and stamp and stamp != self.my_stamp:   # cleaned elsewhere: measure again
                 self.listing.clear()
                 self.ensure_measured(self.path, again=True)
 
@@ -274,7 +325,7 @@ class Folders(TableApp):
     # ─── menu ───
     def menu_items(self, r):
         if r["id"] == "..":
-            return [(f"{ICON['up']}  Up to {tilde(r['path'])}", "u", self.up)]
+            return [(f"{ICON['up']}  Up to {disksrc.short(r['path'])}", "u", self.up)]
         items = []
         if r["dir"]:
             items.append((f"{ICON['open']}  Open", "o", lambda: self.go(r["path"])))
@@ -293,7 +344,7 @@ class Folders(TableApp):
     def place_items(self):
         return [(f"{ICON['up']}  Up one folder", "u", self.up if self.path != "/" else None),
                 (f"{ICON['measure']}  Measure again", "m", self.measure_again),
-                (f"{ICON['term']}  Terminal session in {tilde(self.path)}", "S", lambda: self.session(self.path)),
+                (f"{ICON['term']}  Terminal session in {disksrc.short(self.path, 30)}", "S", lambda: self.session(self.path)),
                 (f"{ICON['home']}  Go to your home", "h", (lambda: self.go(disksrc.HOME)) if self.path != disksrc.HOME else None)]
 
     def on_delete(self, r):
@@ -304,45 +355,82 @@ class Folders(TableApp):
     def measure_again(self):
         self.listing.clear()
         self.ensure_measured(self.path, again=True)
-        self.flash(f"measuring {tilde(self.path)} again…")
+        self.flash(f"measuring {disksrc.short(self.path)} again…")
 
-    def open_app(self, r):
+    def open_app(self, r, sure=False):
+        """Open with the desktop's app · a program (.exe, .desktop, .sh, executable…) asks first:
+        the system would run it."""
+        runs = not r["dir"] and (r["path"].lower().endswith(RUNS) or os.access(r["path"], os.X_OK))
+        if runs and not sure:
+            self.confirm(f"{r['name']} is a program: run it with the system's app?", lambda: self.open_app(r, True), r)
+            return
         if tmuxlink.open_url(r["path"]):
-            self.flash(f"opening {tilde(r['path'])}")
+            self.flash(f"opening {disksrc.short(r['path'])}")
         else:
             self.flash(f"could not start {tmuxlink.BROWSER}", ok=False)
 
     def session(self, path):
-        name = os.path.basename(path.rstrip("/")) or "root"
-        subprocess.Popen([os.path.join(HERE, "terminal.zsh"), "open", name, path],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        self.flash(f"session {name} in {tilde(path)}")
+        name = tmuxlink.session_for(path)
+        try:
+            subprocess.Popen([os.path.join(HERE, "terminal.zsh"), "open", name, path],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.flash(f"session {name} in {disksrc.short(path)}")
+        except OSError as e:
+            self.flash(f"could not open a session: {e.strerror}", ok=False)
 
     def ask_delete(self, r):
-        size = f" ({human(r['size'])})" if r["size"] else ""
+        size = f" ({human(r['size'])})" if r["size"] else (" (size not known yet)" if r["dir"] else "")
         what = "the folder" if r["dir"] and not r["link"] else "the link" if r["link"] else "the file"
-        self.confirm(f"Delete {what} {disksrc.short(r['path'], 50)}{size}? It does not go to a trash: there is no undo",
+        self.confirm(f"Delete {what} {disksrc.short(r['path'], 40)}{size}? No trash, no undo",
                      lambda: self.delete(r), r)
 
     def delete(self, r):
+        """rm in the background, never across into another disk mounted inside; what comes of it
+        is handled on the UI thread (handle_deleted), where the measures live."""
+        if r["dir"] and not r["link"]:
+            inside = disksrc.mounts_under(r["path"])
+            if inside:
+                self.flash(f"not deleted: another disk is mounted inside ({disksrc.short(inside[0])})", ok=False)
+                return
+            argv = ["rm", "-rf"] + (["--one-file-system"] if not disksrc.MACOS else []) + ["--", r["path"]]
+        else:
+            argv = ["rm", "-f", "--", r["path"]]
+        # the highlight goes to the next row (not back to .. at the top)
+        ids = [x["id"] for x in self.rows]
+        if r["id"] in ids:
+            i = ids.index(r["id"])
+            nxt = ids[i + 1] if i + 1 < len(ids) else ids[i - 1] if i else None
+            self.after_delete = nxt
+
         def done(ok, out):
+            self.deleted.append((r, ok, out))
+        self.background(r, "deleting", argv, done, timeout=None)
+
+    def handle_deleted(self):
+        while self.deleted:
+            r, ok, out = self.deleted.pop(0)
+            self.listing.clear()
             if ok:
                 self.forget(r)
-                self.flash(f"deleted {disksrc.short(r['path'], 50)}" + (f" · {human(r['size'])} freed" if r["size"] else ""))
-                tmuxlink.put("@disk-changed", str(time.time_ns()))
+                self.flash(f"deleted {disksrc.short(r['path'], 40)}" + (f" · {human(r['size'])} freed" if r["size"] else ""))
             else:
                 self.flash(f"could not delete it all: {(out.strip().splitlines() or ['?'])[-1][:100]}", ok=False)
-                self.listing.clear()
-        argv = ["rm", "-rf", "--", r["path"]] if r["dir"] and not r["link"] else ["rm", "-f", "--", r["path"]]
-        self.background(r, "deleting", argv, done)
+                self.ensure_measured(self.path, again=True)          # what is left is measured again
+            self.my_stamp = str(time.time_ns())
+            tmuxlink.put("@disk-changed", self.my_stamp)
+            nxt = getattr(self, "after_delete", None)
+            if nxt:
+                self.cur_id = self.sel_id = nxt
+                self.touched = True
+                self.after_delete = None
 
     def forget(self, r):
         """Take what was deleted out of the measures, so the sizes above it are right at once."""
         size = r["size"] or 0
         pre = r["path"].rstrip("/") + "/"
         for m in self.measures:
-            for p in [p for p in m.sizes if p == r["path"] or p.startswith(pre)]:
-                del m.sizes[p]
+            for p in [p for p in list(m.sizes) if p == r["path"] or p.startswith(pre)]:
+                m.sizes.pop(p, None)
             parent = os.path.dirname(r["path"])
             while True:
                 if parent in m.sizes:
@@ -350,11 +438,10 @@ class Folders(TableApp):
                 if parent in ("/", "") or parent == m.root:
                     break
                 parent = os.path.dirname(parent)
-        self.listing.pop(os.path.dirname(r["path"]), None)
 
     def copy(self, text):
         tmuxlink.copy(text)
-        self.flash(f"copied: {text}")
+        self.flash(f"copied: {disksrc.short(text, 60)}")
 
 
 if __name__ == "__main__":

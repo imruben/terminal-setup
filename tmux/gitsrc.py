@@ -28,8 +28,13 @@ DEFAULT_ROOTS = ["workspace", "projects", "code", "src", "dev", "repos", "git"]
 DEFAULT_DEPTH = 4
 SKIP = {"node_modules", "vendor", "venv", "__pycache__", "site-packages", "target", "dist", "build",
         "bower_components", "Pods", "DerivedData", "Library", "Applications", "snap", "go", "pkg"}
+# no terminal, no password window (ssh's askpass, Git Credential Manager on WSL), no lazy
+# fetch of a partial clone, never the index lock
 GIT_ENV = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0",
-           "GIT_PAGER": "cat", "PAGER": "cat"}
+           "GIT_PAGER": "cat", "PAGER": "cat", "SSH_ASKPASS_REQUIRE": "never", "GCM_INTERACTIVE": "never",
+           "GIT_NO_LAZY_FETCH": "1"}
+# the macOS folders that ask for permission when read: not looked into when searching all of home
+PRIVATE = {"Documents", "Desktop", "Downloads", "Pictures", "Movies", "Music"}
 
 
 def tilde(p):
@@ -41,6 +46,21 @@ def expand(p):
 
 
 # ─── where to look ───
+COMMENT = re.compile(r"(^|\s)#.*$")          # a # at the start or after a space: a folder can be called a#b
+DEPTH = re.compile(r"^(.*\S)\s+(\d{1,2})$")
+
+
+def parse_root(line):
+    """'~/clients 2' → (path, 2) · '~/Projects 2024' (an existing folder) stays that folder · None: no folder."""
+    line = COMMENT.sub("", line).strip()
+    if not line:
+        return None
+    if os.path.isdir(expand(line)):
+        return expand(line), DEFAULT_DEPTH
+    m = DEPTH.match(line)
+    return (expand(m[1]), int(m[2])) if m else (expand(line), DEFAULT_DEPTH)
+
+
 def read_roots():
     """[(folder, depth)] and whether they come from ~/.tmux/git-roots (False: the defaults)."""
     try:
@@ -49,79 +69,103 @@ def read_roots():
     except OSError:
         found = [os.path.join(HOME, d) for d in DEFAULT_ROOTS if os.path.isdir(os.path.join(HOME, d))]
         return ([(p, DEFAULT_DEPTH) for p in found] or [(HOME, 3)]), False
-    roots = []
-    for line in lines:
-        line = line.split("#", 1)[0].strip()
-        if not line:
-            continue
-        path, _, depth = line.rpartition(" ")
-        if not (path and depth.isdigit()):        # no depth given (or a path with spaces)
-            path, depth = line, str(DEFAULT_DEPTH)
-        roots.append((expand(path), int(depth)))
-    return roots, True
+    return [r for r in map(parse_root, lines) if r], True
 
 
-def write_roots(roots):
-    os.makedirs(os.path.dirname(ROOTS_FILE), exist_ok=True)
-    head = ("# Folders the git tab of the system monitor looks for repos in (tmux/gitsrc.py)\n"
-            "# one per line, optionally followed by how deep to look (default 4)\n")
-    body = "".join(f"{tilde(p)}{'' if d == DEFAULT_DEPTH else f' {d}'}\n" for p, d in roots)
-    tmp = ROOTS_FILE + ".tmp"
+def root_line(path, depth):
+    """How a folder is written: the depth only when it is not the default, or when the
+    folder's own name ends in digits (it would be read as a depth)."""
+    p = tilde(path)
+    return f"{p} {depth}" if depth != DEFAULT_DEPTH or DEPTH.match(p) else p
+
+
+def write_lines(lines):
+    """Write the file (through a link: a dotfiles repo keeps its file) atomically."""
+    target = os.path.realpath(ROOTS_FILE)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    tmp = target + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        f.write(head + body)
-    os.replace(tmp, ROOTS_FILE)
+        f.write("".join(l + "\n" for l in lines))
+    os.replace(tmp, target)
+
+
+HEADER = ["# Folders the git tab of the system monitor looks for repos in (tmux/gitsrc.py)",
+          "# one per line, optionally followed by how deep to look (default 4)"]
 
 
 def ensure_roots_file():
     """The file, created from what is used now when there is none (to edit it by hand)."""
     roots, saved = read_roots()
     if not saved:
-        write_roots(roots)
+        write_lines(HEADER + [root_line(p, d) for p, d in roots])
     return ROOTS_FILE
 
 
 def add_root(path, depth=DEFAULT_DEPTH):
-    """Add a folder · returns an error text, or '' when it was added."""
+    """Add a folder (your comments and lines stay as they are) · an error text, or ''."""
     path = expand(path)
     if not os.path.isdir(path):
         return f"{tilde(path)} is not a folder"
     roots, _ = read_roots()
     if any(p == path for p, _ in roots):
         return f"{tilde(path)} is already in the list"
-    write_roots(roots + [(path, depth)])
+    ensure_roots_file()
+    with open(ROOTS_FILE, encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    write_lines(lines + [root_line(path, depth)])
     return ""
 
 
 def remove_root(path):
-    roots, _ = read_roots()
-    write_roots([(p, d) for p, d in roots if p != path])
+    """Take a folder's line(s) out; the other lines and comments stay."""
+    ensure_roots_file()
+    with open(ROOTS_FILE, encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    write_lines([l for l in lines if (parse_root(l) or ("",))[0] != path])
 
 
-def find_repos(roots):
-    """{repo path: root it was found under} · a root that is a repo itself counts too."""
-    found = {}
+def find_repos(roots, saved=True):
+    """{repo path: root it was found under} · a root that is a repo itself counts too.
+    Links are followed (~/workspace/proj → /mnt/d/proj), each real folder once. Without a
+    list of your own (saved=False), home's private folders (Documents…) are left alone."""
+    found, seen = {}, set()
+
+    def real(p):
+        try:
+            return os.path.realpath(p)
+        except OSError:
+            return p
+
+    def add(path, root):
+        r = real(path)
+        if r not in seen:
+            seen.add(r)
+            found.setdefault(path, root)
 
     def walk(path, depth, root):
+        r = real(path)
         if os.path.exists(os.path.join(path, ".git")):
-            found.setdefault(path, root)
+            add(path, root)
             return
-        if depth <= 0:
+        if depth <= 0 or ("dir:" + r) in seen:
             return
+        seen.add("dir:" + r)
         try:
             entries = list(os.scandir(path))
         except OSError:
             return
         for e in entries:
             try:
-                if not e.is_dir(follow_symlinks=False):
+                if not e.is_dir():                       # follows links: a loop stops at seen
                     continue
             except OSError:
                 continue
             if e.name == ".git":
                 continue
             if os.path.exists(os.path.join(e.path, ".git")):    # a repo, whatever its name
-                found.setdefault(e.path, root)
-            elif not (e.name in SKIP or e.name.startswith(".")):
+                add(e.path, root)
+            elif not (e.name in SKIP or e.name.startswith(".")
+                      or (not saved and path == HOME and e.name in PRIVATE)):
                 walk(e.path, depth - 1, root)
 
     for root, depth in roots:
@@ -134,7 +178,7 @@ def find_repos(roots):
 def git(repo, *args, timeout=15):
     try:
         res = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, env=GIT_ENV,
-                             timeout=timeout, stdin=subprocess.DEVNULL, errors="replace")
+                             timeout=timeout, stdin=subprocess.DEVNULL, errors="replace", start_new_session=True)
         return res
     except (subprocess.TimeoutExpired, OSError):
         return None
@@ -158,6 +202,16 @@ def git_dir(repo):
         except OSError:
             pass
     return dot
+
+
+def common_dir(gdir):
+    """The main repo's .git folder of a worktree (its own .git folder otherwise)."""
+    try:
+        with open(os.path.join(gdir, "commondir"), encoding="utf-8") as f:
+            d = f.read().strip()
+        return d if os.path.isabs(d) else os.path.normpath(os.path.join(gdir, d))
+    except OSError:
+        return gdir
 
 
 def in_progress(gdir):
@@ -185,7 +239,8 @@ def status(repo):
         err = (res.stderr.strip().splitlines() or ["git did not answer"])[-1] if res else "git did not answer in 15 s"
         return {"error": err}
     st = {"branch": "", "oid": "", "upstream": "", "ahead": 0, "behind": 0, "stash": 0,
-          "staged": 0, "modified": 0, "untracked": 0, "conflicts": 0, "error": ""}
+          "staged": 0, "modified": 0, "untracked": 0, "conflicts": 0, "error": "", "gone": False}
+    has_ab = False
     for line in res.stdout.splitlines():
         if line.startswith("# branch.head "):
             st["branch"] = line[14:]
@@ -196,7 +251,7 @@ def status(repo):
         elif line.startswith("# branch.ab "):
             m = re.match(r"# branch\.ab \+(\d+) -(\d+)", line)
             if m:
-                st["ahead"], st["behind"] = int(m[1]), int(m[2])
+                st["ahead"], st["behind"], has_ab = int(m[1]), int(m[2]), True
         elif line.startswith("# stash "):
             st["stash"] = int(line[8:]) if line[8:].isdigit() else 0
         elif line[:2] in ("1 ", "2 "):
@@ -210,12 +265,22 @@ def status(repo):
     if st["branch"] == "(detached)":
         st["branch"] = ""
         st["detached"] = st["oid"][:8]
+    # an upstream git names but that is not there any more (merged and deleted on the remote)
+    st["gone"] = bool(st["upstream"]) and not has_ab
+    st["initial"] = st["oid"] == "(initial)"
+    if not _STASH_OK[0]:                       # git < 2.35: count the stash reflog
+        out = git_out(repo, "rev-list", "--walk-reflogs", "--count", "refs/stash").strip()
+        st["stash"] = int(out) if out.isdigit() else 0
     gdir = git_dir(repo)
     st["doing"] = in_progress(gdir)
-    try:
-        st["fetched"] = os.path.getmtime(os.path.join(gdir, "FETCH_HEAD"))
-    except OSError:
-        st["fetched"] = None
+    # a worktree's FETCH_HEAD is its own; fetches from the main repo land in the common one
+    stamps = []
+    for d in (gdir, common_dir(gdir)):
+        try:
+            stamps.append(os.path.getmtime(os.path.join(d, "FETCH_HEAD")))
+        except OSError:
+            pass
+    st["fetched"] = max(stamps) if stamps else None
     last = git_out(repo, "log", "-1", "--format=%ct%x1f%s%x1f%an").strip().split("\x1f")
     st["last"] = int(last[0]) if last and last[0].isdigit() else None
     st["subject"] = last[1][:200] if len(last) > 1 else ""      # a message with no blank line is all subject
@@ -253,10 +318,10 @@ def ssh_aliases():
             return
         hosts = []
         for line in lines:
-            parts = line.strip().split(None, 1)
-            if len(parts) < 2 or parts[0].startswith("#"):
+            m = re.match(r"^\s*([^\s=#][^\s=]*)\s*(?:=\s*|\s+)(.*)$", line)     # Key value · Key=value
+            if not m:
                 continue
-            key, value = parts[0].lower(), parts[1].split("#", 1)[0].strip().strip('"')
+            key, value = m[1].lower(), re.sub(r"(^|\s)#.*$", "", m[2]).strip().strip('"')
             if key == "host":
                 hosts = [h for h in value.split() if not any(c in h for c in "*?!")]
             elif key == "match":
@@ -278,7 +343,19 @@ SCP_LIKE = re.compile(r"^(?:[^@/]+@)?([^:/]+):(.+)$")
 
 
 def parse_remote(url, aliases=None):
-    """(host, 'owner/repo', web page or '') of a remote URL · ssh aliases resolved."""
+    """(host, 'owner/repo', web page or '') of a remote URL · ssh aliases resolved · never raises."""
+    try:
+        return _parse_remote(url, aliases)
+    except ValueError:                           # a bad port, a broken [IPv6]…
+        return "", safe_url(url), ""
+
+
+def safe_url(url):
+    """The URL without user:password@ (tokens stay off the screen and the clipboard)."""
+    return re.sub(r"^(\w[\w+.-]*://)[^/@]*@", r"\1", (url or "").strip())
+
+
+def _parse_remote(url, aliases=None):
     url = (url or "").strip()
     if not url:
         return "", "", ""

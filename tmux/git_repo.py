@@ -22,10 +22,11 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import gitsrc
 from gitsrc import ago, git, git_out, tilde
 from tui import BLUE, BOLD, DIM, GREEN, RED, RESET, SUB, TEXT, YELLOW, ellipsis, pad
-from viewer import Viewer, run
+from viewer import BackgroundViewer, run
 
 DELTA = shutil.which("delta")
 MAX_LINES = 4000
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"    # what a repo with no commits is compared to
 KIND = {"M": "modified", "A": "added", "D": "deleted", "R": "renamed", "C": "copied", "T": "type changed",
         "U": "unmerged"}
 CONFLICT = {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
@@ -35,12 +36,17 @@ def k(label):
     return f"  {DIM}{label:<11}{RESET}"
 
 
+def clean(text):
+    """A path as text that cannot move the cursor or change colours (control characters shown as ?)."""
+    return "".join("?" if ord(c) < 32 or ord(c) == 127 else c for c in text)
+
+
 def head_exists(repo):
     res = git(repo, "rev-parse", "--verify", "--quiet", "HEAD")
     return bool(res and res.returncode == 0)
 
 
-class Repo(Viewer):
+class Repo(BackgroundViewer):
     icon = "\U000F02A2"
     title = "Repo"
     option = "@git-selected"
@@ -57,7 +63,7 @@ class Repo(Viewer):
         finally:
             self.key = key
 
-    def load(self, repo, tab, width):
+    def compute(self, repo, tab, width):                # in a thread (BackgroundViewer)
         if not os.path.isdir(repo):
             return [f"  {YELLOW}{tilde(repo)} is gone"]
         if tab == "Diff":
@@ -82,7 +88,10 @@ class Repo(Viewer):
             branch = f"{YELLOW}detached at {st['detached']}{DIM} · not on any branch"
         else:
             branch = f"{TEXT}{BOLD}{st['branch']}{RESET}"
-            if st["upstream"]:
+            if st.get("gone"):
+                branch += f"{DIM} → {st['upstream']}  {YELLOW}gone from the remote{DIM} (merged and deleted?): " \
+                          f"publish it again, or delete the branch"
+            elif st["upstream"]:
                 branch += f"{DIM} → {st['upstream']}  "
                 sync = []
                 if st["ahead"]:
@@ -101,7 +110,8 @@ class Repo(Viewer):
             lines.append(k("State") + f"{RED}{BOLD}{st['doing']}{RESET}{RED} · finish it or --abort in a terminal")
         for n, (name, url) in enumerate(sorted(s["remotes"].items(), key=lambda kv: kv[0] != s["remote"])):
             web = gitsrc.parse_remote(url, gitsrc.ssh_aliases())[2]
-            lines.append(k("Remote" if n == 0 else "") + f"{TEXT}{name}{DIM}  {url}" + (f"  {BLUE}{web}" if web else ""))
+            lines.append(k("Remote" if n == 0 else "") + f"{TEXT}{name}{DIM}  {gitsrc.safe_url(url)}"
+                         + (f"  {BLUE}{web}" if web else ""))
         who = f"{TEXT}{s['name'] or '?'} <{s['email']}>" if s["email"] else f"{RED}no user.email set: commits fail"
         lines.append(k("Commits as") + who + (f"{DIM}  from {tilde(s['email_from'])}" if s["email_from"] else ""))
         if st["last"]:
@@ -117,10 +127,20 @@ class Repo(Viewer):
         return lines + self.changes(repo)
 
     def changes(self, repo):
-        out = git_out(repo, "status", "--porcelain=v1", "--untracked-files=normal")
+        """Every change, from `status -z` (paths as they are: spaces, accents; renames as old → new)."""
+        out = git_out(repo, "status", "--porcelain=v1", "-z")
         groups = {"conflicts": [], "staged": [], "changed": [], "untracked": []}
-        for line in out.splitlines():
-            xy, path = line[:2], line[3:]
+        fields = out.split("\0")
+        i = 0
+        while i < len(fields):
+            entry = fields[i]
+            i += 1
+            if len(entry) < 4:
+                continue
+            xy, path = entry[:2], clean(entry[3:])
+            if xy[0] in "RC" and i < len(fields):          # a rename: the old path is the next field
+                path = f"{clean(fields[i])} → {path}"
+                i += 1
             if xy == "??":
                 groups["untracked"].append(f"  {DIM}  {path}")
             elif xy in CONFLICT:
@@ -144,26 +164,28 @@ class Repo(Viewer):
 
     # ─── Diff ───
     def diff(self, repo, width):
-        base = ["HEAD"] if head_exists(repo) else ["--cached"]
-        stat = git_out(repo, "-c", "color.ui=always", "diff", *base, f"--stat={max(40, width - 4)}").rstrip("\n")
+        """What is not committed yet (staged and not), against HEAD. diff-index, not `diff HEAD`:
+        it never rewrites the index, so it never gets in the way of your own git add / commit."""
+        base = "HEAD" if head_exists(repo) else EMPTY_TREE
+        stat = git_out(repo, "diff-index", "--color=always", f"--stat={max(40, width - 4)}", base).rstrip("\n")
         if not stat:
             untracked = sum(1 for l in git_out(repo, "status", "--porcelain=v1").splitlines() if l.startswith("??"))
             return [f"  {GREEN}No changes to tracked files"] + \
                    ([f"  {DIM}{untracked} untracked (not in a diff until you git add them: Status tab)"] if untracked else [])
         lines = [f"  {line}" for line in stat.splitlines()] + [""]
-        raw = git(repo, "diff", *base, timeout=30)
-        text = raw.stdout if raw and raw.returncode == 0 else ""
-        if DELTA and text:
-            try:
-                res = subprocess.run([DELTA, "--paging=never", f"--width={max(40, width - 3)}"], input=text,
-                                     capture_output=True, text=True, timeout=30, errors="replace")
-                body = res.stdout.splitlines() if res.returncode == 0 else []
-            except (subprocess.TimeoutExpired, OSError):
-                body = []
-        else:
-            body = []
+        body = []
+        if DELTA:
+            raw = git_out(repo, "diff-index", "-p", "--no-color", base, timeout=30)
+            text = "\n".join(raw.splitlines()[:MAX_LINES * 2])      # delta gets no more than is shown
+            if text:
+                try:
+                    res = subprocess.run([DELTA, "--paging=never", f"--width={max(40, width - 3)}"], input=text,
+                                         capture_output=True, text=True, timeout=30, errors="replace")
+                    body = res.stdout.splitlines() if res.returncode == 0 else []
+                except (subprocess.TimeoutExpired, OSError):
+                    body = []
         if not body:
-            body = git_out(repo, "-c", "color.ui=always", "diff", *base, timeout=30).splitlines()
+            body = git_out(repo, "diff-index", "-p", "--color=always", base, timeout=30).splitlines()
         if len(body) > MAX_LINES:
             body = body[:MAX_LINES] + [f"{YELLOW}… {len(body) - MAX_LINES} more lines: see the whole diff in a terminal"]
         return lines + body
@@ -204,7 +226,8 @@ class Repo(Viewer):
         remote = [r.split("\x1f")[1:] for r in remote if r.count("\x1f") >= 3 and not r.split("\x1f")[0]][:40]
         if remote:
             w = min(40, max(len(r[0]) for r in remote))
-            lines += ["", f"  {BOLD}{BLUE}Remote{RESET}{DIM}  newest 40 · as of the last fetch", ""]
+            lines += ["", f"  {BOLD}{BLUE}Remote{RESET}{DIM}  " + ("newest 40" if len(remote) == 40 else f"{len(remote)}")
+                      + " · as of the last fetch", ""]
             for name, when, subject in (r + [""] * (3 - len(r)) for r in remote):
                 age = ago(int(when)) if when.isdigit() else ""
                 lines.append(f"    {SUB}{pad(ellipsis(name, w), w)}{RESET} {DIM}{age:>4} {RESET}{SUB}{subject}")

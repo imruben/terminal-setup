@@ -56,12 +56,14 @@ bindkey '^H' backward-kill-word
 ZSH_AUTOSUGGEST_BUFFER_MAX_SIZE=100
 ZSH_HIGHLIGHT_MAXLENGTH=512
 
-# Dump in ~/.cache; full security check (compaudit) only once a day, -C otherwise
+# Dump in ~/.cache; full security check (compaudit) only once a day, -C otherwise. The full run
+# leaves the dump as it is when nothing changed, so touch it: else -C would never come back.
+# New completions (brew install …) show up at the next daily run, or after rm ~/.cache/zsh/zcompdump
 _zcd=${XDG_CACHE_HOME:-$HOME/.cache}/zsh/zcompdump
 [[ -d ${_zcd:h} ]] || mkdir -p ${_zcd:h}
 autoload -Uz compinit
 _zfresh=( $_zcd(N.mh-24) )        # glob qualifier: non-empty if the dump is < 24h old
-if (( $#_zfresh )); then compinit -C -d $_zcd; else compinit -d $_zcd; fi
+if (( $#_zfresh )); then compinit -C -d $_zcd; else compinit -d $_zcd && touch $_zcd; fi
 unset _zcd _zfresh
 # LS_COLORS (also used by completion): dircolors on Linux, gdircolors (coreutils) on macOS
 if (( $+commands[dircolors] )); then eval "$(dircolors -b)"

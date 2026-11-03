@@ -2,8 +2,9 @@
 # ═══════════════════════════════════════════════════════════════
 #  terminal · tmux session manager
 #  Used by: the `terminal` shell function (zsh/functions.zsh), the Ctrl+a s
-#  popup and `terminal`. New Windows Terminal tabs open the `system` monitor
-#  session instead (tmux/system.sh).
+#  popup and `terminal`. New terminal windows / tabs open the start session:
+#  the one chosen with `terminal start NAME` (or Ctrl+s in the session picker),
+#  kept in ~/.tmux/start-session · without one, the `system` monitor (tmux/system.sh).
 #  Sessions are created by hand: no project scanning.
 #
 #  Config (env vars):
@@ -58,6 +59,53 @@ clean_name() {
   print -r -- ${n##-#}
 }
 
+# ─────────────── Start session (new terminals open it) ───────────────
+# ~/.tmux/start-session: "name<TAB>folder" (the folder to create it in when it is not running)
+START_FILE=~/.tmux/start-session
+
+start_get() {                 # prints "name<TAB>folder", or nothing (= the system monitor)
+  [[ -r $START_FILE ]] || return 0
+  local line; IFS= read -r line < $START_FILE
+  [[ -n ${line%%$TAB*} && ${line%%$TAB*} != system ]] && print -r -- "$line"
+}
+
+start_set() {                 # start_set <name> [folder] · system (or nothing) = back to the monitor
+  local name=$(clean_name "$1") dir=${2:-}
+  if [[ -z $name || $name == system ]]; then
+    rm -f $START_FILE; return
+  fi
+  [[ -z $dir ]] && session_exists "$name" && dir=$(tmux display -p -t "=$name:" '#{session_path}' 2>/dev/null)
+  [[ -z $dir ]] && dir=$PWD
+  [[ $dir == '~'(/*|) ]] && dir=$HOME${dir#\~}
+  mkdir -p ${START_FILE:h}
+  print -r -- "$name$TAB$dir" > $START_FILE
+}
+
+start_renamed() {             # the start session was renamed: follow it
+  local line=$(start_get)
+  [[ ${line%%$TAB*} == $1 ]] && print -r -- "$2$TAB${line#*$TAB}" > $START_FILE
+}
+
+start_cmd() {
+  case $1 in
+    "")
+      local line=$(start_get)
+      if [[ -z $line ]]; then
+        print -r -- "New terminals open the ${B}system${X} monitor ${D}(terminal start NAME changes it)${X}"
+      else
+        local name=${line%%$TAB*} dir=${line#*$TAB}
+        print -r -- "New terminals open ${B}$name${X} ${D}· created in ${dir/#$HOME/~} when it is not running"
+        print -r -- "${D}terminal start system goes back to the monitor${X}"
+      fi ;;
+    -r|--reset|reset|system)
+      start_set system; ok "new terminals open the system monitor" ;;
+    *)
+      start_set "$1" "$2" || return
+      local line=$(start_get)
+      ok "new terminals open ${B}${line%%$TAB*}${X} ${D}(created in ${${line#*$TAB}/#$HOME/~} when it is not running)${X}" ;;
+  esac
+}
+
 # a closed session's description must not pass to a new session with the same name
 forget_description() {
   local f=~/.tmux/descriptions.tsv
@@ -71,6 +119,7 @@ rename_session() {
   [[ -z $new || $new == $old ]] && return 0
   [[ $old == system || $new == system ]] && { fail "the system monitor keeps its name"; return 1 }
   tmux rename-session -t "=$old" -- "$new" || return
+  start_renamed "$old" "$new"
   [[ -f $f ]] && awk -F'\t' -v o="$old" -v n="$new" 'BEGIN { OFS = FS } $1 == o { $1 = n } { print }' "$f" > "$f.tmp" \
     && mv "$f.tmp" "$f"
   ok "$old → ${B}$new${X}"
@@ -207,7 +256,7 @@ pick() {
 # ─────────────── Auto-start (new Windows Terminal tab) ───────────────
 
 # Start the server so continuum restores the last saved sessions, wait for
-# them to appear, then open the system monitor session.
+# them to appear, then open the start session (terminal start), else the system monitor.
 autostart() {
   if ! server_running; then
     tmux start-server
@@ -217,6 +266,16 @@ autostart() {
     done
   fi
 
+  # the start session chosen with `terminal start` (created in its folder when it is not
+  # running: closed, or not in the last save); the monitor is built meanwhile, in the background
+  local line=$(start_get) name dir
+  if [[ -n $line ]]; then
+    name=${line%%$TAB*} dir=${line#*$TAB}
+    ( $TERMINAL_SETUP/tmux/system.sh ensure &>/dev/null & )
+    [[ -d $dir ]] || dir=$HOME
+    open_session "$name" "$dir" && return
+    fail "could not open the start session $name: the system monitor instead"
+  fi
   # straight into the system monitor (tmux/system.sh); Ctrl+a s switches session,
   # Ctrl+a d leaves tmux and comes back to this shell
   $TERMINAL_SETUP/tmux/system.sh && return
@@ -273,6 +332,7 @@ help() {
     ${Y}terminal kill-all${X}              kill every session (the system monitor stays)
     ${Y}terminal system${X}                system monitor ${D}(info · processes & ports · disk · packages · ssh · docker · git · opens in new tabs)${X}
     ${Y}terminal system restart${X}        rebuild the system monitor
+    ${Y}terminal start${X} [name|system]   the session new terminals open ${D}(default: the system monitor)${X}
     ${Y}terminal guide${X}                 tmux guide ${D}(same as Ctrl+a ? inside tmux)${X}
     ${Y}terminal files${X}                 every file the install put on this machine, and what it is for
     ${Y}terminal help${X}                  this panel
@@ -281,6 +341,7 @@ help() {
 $(list)
 
   ${D}Inside tmux: ${X}${C}Ctrl+a Space${X}${D} quick menu · ${X}${C}Ctrl+a ?${X}${D} guide · ${X}${C}Ctrl+a s${X}${D} this picker${X}
+  ${D}New terminals open: ${X}$(local l=$(start_get); print -r -- ${${l%%$TAB*}:-system})${D} · ${X}${C}terminal start NAME${X}${D} changes it (or Ctrl+s in the picker)${X}
   ${D}Disable auto-start: add ${X}export TERMINAL_NO_AUTOSTART=1${D} to ~/.zshrc, above the terminal-setup line${X}
 
 EOF
@@ -328,6 +389,7 @@ case "$1" in
   guide|g)          exec $TERMINAL_SETUP/tmux/guide.zsh ;;
   files|f)          exec bash $TERMINAL_SETUP/install/files.sh ;;
   system|sys)       exec $TERMINAL_SETUP/tmux/system.sh ${2:-open} ;;
+  start)            start_cmd "$2" "$3" ;;
   help|h|-h|--help) help ;;
   _preview)         preview "$2" "$3" ;;
   _names)           session_names ;;                 # for zsh completion

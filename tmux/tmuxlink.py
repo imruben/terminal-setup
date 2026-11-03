@@ -5,6 +5,7 @@
 # ═══════════════════════════════════════════════════════════════
 
 import os
+import re
 import subprocess
 import time
 
@@ -133,3 +134,16 @@ def open_url(url):
 
 def copy(text):
     tmux("set-buffer", "-w", "--", text)
+
+
+def session_for(path):
+    """The session name for a folder (terminal.zsh open): its name (. and : become -), or
+    parent-name when a session of that name already works in another folder."""
+    def clean(n):
+        return re.sub(r"\s+", "-", re.sub(r"[.:]", "-", n.strip())).lstrip("-") or "folder"
+    path = path.rstrip("/") or "/"
+    name = clean(os.path.basename(path) or "root")
+    res = tmux("display", "-p", "-t", f"={name}:", "#{session_path}")
+    if res.returncode == 0 and os.path.realpath(res.stdout.strip() or "/") != os.path.realpath(path):
+        name = clean(f"{os.path.basename(os.path.dirname(path)) or 'root'}-{os.path.basename(path)}")
+    return name

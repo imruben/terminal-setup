@@ -208,7 +208,7 @@ Lo mismo con **`make`** (si no lo tienes: `sudo apt install make`; `./install.sh
 
 ## Primeros pasos
 
-Abre una terminal nueva: tmux arranca solo y te lleva al **monitor del sistema**. Desde ahí:
+Abre una terminal nueva: tmux arranca solo y te lleva al **monitor del sistema** (o a la sesión que elijas como de inicio, ver abajo). Desde ahí:
 
 | Quiero… | Cómo |
 |---|---|
@@ -218,6 +218,7 @@ Abre una terminal nueva: tmux arranca solo y te lleva al **monitor del sistema**
 | una sesión nueva para un proyecto | `Ctrl+a s`, escribe el nombre, Enter, elige la carpeta |
 | pestaña nueva / dividir | `Ctrl+a c` · `Ctrl+a v` (al lado) · `Ctrl+a -` (debajo) |
 | volver al monitor | `Ctrl+a M` (o clic en CPU / RAM de la barra) |
+| que las terminales nuevas abran otra sesión | en `Ctrl+a s`, sobre la sesión: `Ctrl+s` (o clic derecho → *New terminals start here*) · en la terminal: `terminal start NOMBRE` · `terminal start system` vuelve al monitor. Si esa sesión no está abierta, se crea en su carpeta |
 | una terminal sin tmux | `Ctrl+a d`: sales de tmux al shell normal y tmux sigue funcionando (vuelves con `terminal`). Para que no arranque nunca: `export TERMINAL_NO_AUTOSTART=1` en tu `~/.zshrc` |
 
 > **`Ctrl+a`** es el prefijo de tmux: pulsa `Ctrl+a`, suelta, y luego la tecla. Mientras está activo, la barra se pone roja y muestra «press a key».
@@ -309,7 +310,7 @@ terminal-setup/
 └── windows/windows-terminal.md     WSL: fuente y perfil de Windows Terminal
 ```
 
-**No van al repo** (son de cada máquina y viven en tu home): tu `~/.zshrc` y `~/.tmux.conf`, los plugins (`~/.tmux/plugins`), los logs de tmux (`~/.tmux/logs`), las descripciones de sesión (`~/.tmux/descriptions.tsv`), los guardados de tmux-resurrect y tus notas de paquetes (`~/.apt-notes.tsv`).
+**No van al repo** (son de cada máquina y viven en tu home): tu `~/.zshrc`, `~/.zshenv` y `~/.tmux.conf`, los plugins (`~/.tmux/plugins`), los logs de tmux (`~/.tmux/logs`), las descripciones de sesión (`~/.tmux/descriptions.tsv`), las carpetas de la pestaña git (`~/.tmux/git-roots`), la sesión de inicio (`~/.tmux/start-session`), los guardados de tmux-resurrect, tus notas de paquetes (`~/.apt-notes.tsv`) y la caché del autocompletado (`~/.cache/zsh/zcompdump`).
 
 ---
 

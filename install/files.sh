@@ -146,6 +146,8 @@ file "${XDG_DATA_HOME:-$HOME/.local/share}/tmux/resurrect" "the saved sessions (
 file "$HOME/.apt-notes.tsv" "why you installed each package (Packages pane → Why…)"
 file "$HOME/.apt-base.txt" "apt packages the system came with (not shown as yours)"
 file "$HOME/.tmux/git-roots" "the folders the git tab looks for repos in (Repos pane → Edit…)"
+file "$HOME/.tmux/start-session" "the session new terminals open (terminal start · none: the system monitor)"
+file "${XDG_CACHE_HOME:-$HOME/.cache}/zsh/zcompdump" "zsh's completion cache (rebuilt once a day)"
 
 group "Backups" "your files as they were before a change, just in case · nothing deletes them"
 backups=$(ls -1d "$HOME"/.terminal-setup-backup/*/ 2>/dev/null)

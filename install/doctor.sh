@@ -47,6 +47,7 @@ need delta
 optional docker "the docker tab, Docker in the disk tab's Cleanup"
 optional ssh "the ssh tab"
 optional lazygit "lazygit from the git tab"
+optional tig "tig from the git tab"
 optional gh "GitHub from the shell"
 [ "$OS" = macos ] || optional snap "snap packages in the packages tab"
 optional brew "Homebrew packages in the packages tab"
@@ -62,6 +63,7 @@ for f in .zshrc .tmux.conf .zshenv; do
   case $f in .zshrc) want=$(block_zsh) ;; .zshenv) want=$(block_zshenv) ;; *) want=$(block_tmux) ;; esac
   case $f in .zshenv) what="skips the system's compinit (zsh/zshrc runs it)" ;; *) what="loads terminal-setup" ;; esac
   if has_block "$HOME/$f" && [ "$(block_in "$HOME/$f")" = "$want" ]; then ok "~/$f $what"
+  elif [ $f = .zshenv ]; then fail "~/$f does not skip the system's compinit (run ./install.sh)"; problems=$((problems + 1))
   elif has_block "$HOME/$f"; then fail "~/$f loads terminal-setup from another folder (run ./install.sh)"; problems=$((problems + 1))
   else fail "~/$f does not load terminal-setup (run ./install.sh)"; problems=$((problems + 1)); fi
 done

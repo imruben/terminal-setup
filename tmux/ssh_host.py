@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sshsrc
 from sshsrc import ago, tilde
 from tui import BLUE, BOLD, DIM, GREEN, RED, RESET, SUB, TEXT, YELLOW
-from viewer import Viewer, run
+from viewer import BackgroundViewer, run
 
 BAT = shutil.which("bat") or shutil.which("batcat")
 SHOWN = ("hostname", "user", "port", "identityfile", "identitiesonly", "proxyjump", "proxycommand", "forwardagent",
@@ -35,7 +35,7 @@ def k(label):
     return f"  {DIM}{label:<12}{RESET}"
 
 
-class Host(Viewer):
+class Host(BackgroundViewer):
     icon = "\U000F08C0"
     title = "Host"
     option = "@ssh-selected"
@@ -44,7 +44,7 @@ class Host(Viewer):
     refresh_every = 5
     empty = "highlight a host in the Hosts pane"
 
-    def load(self, dest, tab, width):
+    def compute(self, dest, tab, width):              # in a thread (BackgroundViewer): DNS, ssh -G, ps…
         if tab == "Config":
             return self.config(dest, width)
         if tab == "Recent":
@@ -53,16 +53,18 @@ class Host(Viewer):
 
     # ─── Info ───
     def info(self, dest):
-        c = sshsrc.resolve(dest)
+        c = sshsrc.resolve(dest, self.extra(dest))
         if not c:
-            return [f"  {RED}ssh -G {dest} failed: is ssh installed?"]
+            why = sshsrc.ERRORS.get(dest, "is ssh installed?")
+            return [f"  {RED}ssh -G {dest} failed: {why}",
+                    f"  {DIM}a typo in ~/.ssh/config? Hosts → right-click → Edit ~/.ssh/config"]
         lines = [k("Connect") + f"{TEXT}{BOLD}ssh {dest}{RESET}"]
         host, port = c.get("hostname", dest), c.get("port", "22")
         addr = ""
         if any(ch.isalpha() for ch in host.replace(":", "")):      # a name, not an IP: what it points to
             try:
                 addr = socket.getaddrinfo(host, None)[0][4][0]
-            except (socket.gaierror, OSError, IndexError):
+            except (socket.gaierror, OSError, IndexError, ValueError):
                 addr = f"{RED}does not resolve"
         lines.append(k("Address") + f"{TEXT}{host}{DIM}" + (f"  → {addr}" if addr else "") + (f"  port {port}" if port != "22" else ""))
         lines.append(k("User") + f"{TEXT}{c.get('user', '?')}")
@@ -105,9 +107,9 @@ class Host(Viewer):
         lines.append(k("Defined in") + (f"{SUB}{tilde(block['file'])}:{block['line']}" if block else
                                         f"{YELLOW}not in ~/.ssh/config{DIM} (from your history) · Hosts → Add a host…"))
         live = sshsrc.live()
-        procs = live.get(dest, []) + (live.get(host, []) if host != dest else [])
+        procs = list({p[0]: p for p in live.get(dest, []) + (live.get(host, []) if host != dest else [])}.values())
         if procs:
-            for n, (pid, kind, args) in enumerate(procs):
+            for n, (pid, kind, args, fwd) in enumerate(procs):
                 lines.append(k("Open now" if n == 0 else "") + f"{GREEN}{kind}{DIM}  pid {pid} · {args[:120]}")
         else:
             lines.append(k("Open now") + f"{DIM}nothing")
@@ -118,6 +120,15 @@ class Host(Viewer):
         if problem:
             lines += ["", f"  {YELLOW}{problem}: keys with a passphrase are asked every time"]
         return lines
+
+    @staticmethod
+    def extra(dest):
+        """A host from your history: the options of its last command (-p 2222…)."""
+        last = None
+        for h in sshsrc.history():
+            if h[3] == dest:
+                last = h[4]
+        return sshsrc.conn_args(last) if last and dest not in [a for a, _ in sshsrc.concrete_hosts()] else []
 
     @staticmethod
     def about(h, dest, host):
@@ -155,15 +166,16 @@ class Host(Viewer):
 
     # ─── Recent ───
     def recent(self, dest):
-        c = sshsrc.resolve(dest)
+        c = sshsrc.resolve(dest, self.extra(dest))
         host = c.get("hostname", dest)
         uses = [h for h in sshsrc.history() if self.about(h, dest, host)]
         if not uses:
             return [f"  {DIM}No ssh, scp, rsync… command with {dest} in your shell history."]
         lines = [f"  {DIM}{len(uses)} commands · newest first", ""]
-        for when, cmd, prog, d in reversed(uses[-300:]):
+        for when, cmd, prog, d, _ in reversed(uses[-300:]):
             stamp = datetime.datetime.fromtimestamp(when).strftime("%Y-%m-%d %H:%M") if when else "                "
-            lines.append(f"  {DIM}{stamp}{RESET}  {TEXT}{cmd}")
+            safe = "".join("?" if ord(ch) < 32 or ord(ch) == 127 else ch for ch in cmd)
+            lines.append(f"  {DIM}{stamp}{RESET}  {TEXT}{safe}")
         return lines
 
 

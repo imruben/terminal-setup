@@ -11,6 +11,7 @@
 # ═══════════════════════════════════════════════════════════════
 
 import fnmatch
+import getpass
 import glob
 import os
 import re
@@ -89,13 +90,15 @@ def blocks():
             key = key.lower()
             if key in ("host", "match"):
                 cur["end"] = n - 1
-                cur = {"kind": key, "patterns": value.split() if key == "host" else [value], "file": path,
+                cur = {"kind": key, "patterns": words(value) if key == "host" else [value], "file": path,
                        "line": n, "end": len(lines), "first": False}
                 out.append(cur)
             elif key == "include" and depth < 4:
-                for pat in value.split():
+                for pat in words(value):
                     pat = os.path.expanduser(pat)
                     pat = pat if os.path.isabs(pat) else os.path.join(SSH_DIR, pat)
+                    folder = os.path.dirname(pat)       # a file added there changes the folder's time
+                    stamp.append((folder, os.path.getmtime(folder) if os.path.isdir(folder) else 0))
                     for p in sorted(glob.glob(pat)):
                         read(p, depth + 1)
         cur["end"] = len(lines)
@@ -112,14 +115,33 @@ def _restat(stamp):
 
 
 def _kv(line):
-    """'Key value', 'Key=value' or 'Key = value' → (key, value without quotes / comment)."""
-    m = re.match(r"(\S+?)(?:\s*=\s*|\s+)(.*)$", line)
+    """'Key value', 'Key=value' or 'Key = value' → (key, the rest as written)."""
+    m = re.match(r"([^\s=]+)(?:\s*=\s*|\s+)(.*)$", line)
     if not m:
         return line, ""
-    value = m[2].strip()
-    if value.startswith('"') and value.endswith('"') and len(value) > 1:
-        value = value[1:-1]
-    return m[1], value
+    return m[1], m[2].strip()
+
+
+def words(value):
+    """A config value as ssh splits it: "double quotes" keep spaces, a word starting with #
+    starts a comment (Host web # prod → ['web'])."""
+    out, cur, quoted, i = [], "", False, 0
+    while i < len(value):
+        c = value[i]
+        if c == '"':
+            quoted = not quoted
+        elif c.isspace() and not quoted:
+            if cur:
+                out.append(cur)
+                cur = ""
+        elif c == "#" and not quoted and not cur:
+            break
+        else:
+            cur += c
+        i += 1
+    if cur:
+        out.append(cur)
+    return out
 
 
 def block_text(b):
@@ -177,11 +199,18 @@ def applying(alias):
 MULTI = {"identityfile", "localforward", "remoteforward", "dynamicforward", "certificatefile", "sendenv", "setenv"}
 
 
-def resolve(dest):
-    """How ssh would connect to dest (`ssh -G`): {option: value} (lists for repeatable ones)."""
-    rc, out, _ = run(["ssh", "-G", dest], timeout=5)
+ERRORS = {}            # dest → why ssh -G failed (a typo in ~/.ssh/config: "Bad configuration option")
+
+
+def resolve(dest, extra=()):
+    """How ssh would connect to dest (`ssh -G`, with the options of a command from your
+    history: -p 2222 -i key): {option: value} (lists for repeatable ones)."""
+    rc, out, err = run(["ssh", "-G", *extra, dest], timeout=5)
     if rc:
+        lines = [l.strip() for l in err.splitlines() if l.strip() and "Pseudo-terminal" not in l]
+        ERRORS[dest] = lines[0] if lines else "ssh -G failed"
         return {}
+    ERRORS.pop(dest, None)
     cfg = {}
     for line in out.splitlines():
         key, _, value = line.partition(" ")
@@ -192,13 +221,36 @@ def resolve(dest):
     return cfg
 
 
+def expand_tokens(path, cfg):
+    """IdentityFile's %h %r %u %d %l %n %p %% (ssh -G prints them as written)."""
+    if "%" not in path:
+        return path
+    host = socket.gethostname()
+    values = {"%": "%", "h": cfg.get("hostname", ""), "r": cfg.get("user", ""), "u": getpass.getuser(),
+              "d": HOME, "l": host.split(".")[0], "L": host.split(".")[0], "n": cfg.get("host", cfg.get("hostname", "")),
+              "p": cfg.get("port", "22")}
+    return re.sub(r"%(.)", lambda m: values.get(m[1], m[0]), path)
+
+
 def key_files(cfg):
     """The identity files of a resolved host that exist, as full paths."""
     out = []
     for p in cfg.get("identityfile", []):
-        p = os.path.expanduser(p)
+        p = os.path.expanduser(expand_tokens(p, cfg))
         if os.path.exists(p) and p not in out:
             out.append(p)
+    return out
+
+
+CONN_OPTS = "pilJoF"      # the options of a command that change where / how ssh connects
+
+
+def conn_args(parsed):
+    """The connection options of a parsed command (-p 2222 -i key -J jump -o …) as argv."""
+    out = []
+    for letter in CONN_OPTS:
+        for v in (parsed or {}).get("opts", {}).get(letter, []):
+            out += [f"-{letter}", v]
     return out
 
 
@@ -207,59 +259,124 @@ def git_service(cfg):
 
 
 # ─── history and what runs now ───
+WRAPPERS = {"sudo": "ugCDhpRrTt", "exec": "", "command": "", "time": "", "nohup": "", "env": "uSC"}
+SFTP_ARGS = set("BbcDFiJlPRSs")
+
+
+def parse_ssh(cmd):
+    """An ssh-family command line → {prog, dest, opts: {letter: [values]}, flags, rest, fwd}
+    ('ssh -NL 5432:localhost:5432 db' → dest 'db', flags {'N'}, fwd ['-L 5432:localhost:5432']) ·
+    None when it is not one, or its destination is a shell variable ($h)."""
+    try:
+        w = shlex.split(cmd, comments=True)
+    except ValueError:
+        w = cmd.split()
+    while w and (os.path.basename(w[0]) in WRAPPERS or re.match(r"^\w+=", w[0])):
+        wrapper = os.path.basename(w[0])
+        w = w[1:]
+        takes = WRAPPERS.get(wrapper, "")
+        while w and w[0].startswith("-") and wrapper in WRAPPERS:     # sudo -u x ssh … · env -u X …
+            flag = w[0]
+            w = w[1:]
+            if len(flag) == 2 and flag[1] in takes and w:
+                w = w[1:]
+    if not w:
+        return None
+    prog = os.path.basename(w[0])
+    if prog not in CLIENTS:
+        return None
+    opts, flags, fwd = {}, set(), []
+    if prog == "ssh":
+        i = 1
+        while i < len(w):
+            word = w[i]
+            if word == "--":
+                i += 1
+                break
+            if not (word.startswith("-") and len(word) > 1):
+                break
+            j = 1
+            while j < len(word):                 # -fNL 8080:… : f and N are flags, L takes the rest
+                ch = word[j]
+                if ch in ARG_OPTS:
+                    if j + 1 < len(word):
+                        val = word[j + 1:]
+                    else:
+                        i += 1
+                        val = w[i] if i < len(w) else ""
+                    opts.setdefault(ch, []).append(val)
+                    if ch in "LRD":
+                        fwd.append(f"-{ch} {val}")
+                    break
+                flags.add(ch)
+                j += 1
+            i += 1
+        if i >= len(w):
+            return None
+        dest, rest = w[i], w[i + 1:]
+        if dest.startswith("ssh://"):
+            m = re.match(r"ssh://(?:([^@/]+)@)?(\[[^\]]+\]|[^:/]+)(?::(\d+))?", dest)
+            if not m:
+                return None
+            dest = (f"{m[1]}@" if m[1] else "") + m[2].strip("[]")
+            if m[3]:
+                opts.setdefault("p", []).append(m[3])
+    else:
+        dest, rest, i = None, [], 1
+        while i < len(w):
+            word = w[i]
+            if word == "--":
+                break
+            if word.startswith("-"):
+                if prog in ("sftp", "scp") and len(word) == 2 and word[1] in SFTP_ARGS:
+                    i += 1                       # -P 2222, -i key: the value is not a host
+                i += 1
+                continue
+            if "://" not in word:
+                m = re.match(r"^(?:[\w.\-]+@)?[\w.\-]+(?=:)", word)
+                if m and not word.startswith("/"):
+                    dest = m[0]
+                    break
+                if prog in ("sftp", "mosh"):
+                    dest = word
+                    break
+            i += 1
+        if not dest:
+            return None
+    if not dest or any(c in dest for c in "$`(){}") or dest.startswith("-"):
+        return None
+    return {"prog": prog, "dest": dest, "opts": opts, "flags": flags, "rest": rest, "fwd": fwd}
+
+
 def parse_command(cmd):
     """'ssh -p 2222 root@1.2.3.4 uptime' → ('ssh', 'root@1.2.3.4') · None when it is not an
     ssh-family command with a destination."""
-    try:
-        words = shlex.split(cmd, comments=True)
-    except ValueError:
-        words = cmd.split()
-    while words and (words[0] in ("sudo", "exec", "command", "time", "nohup") or "=" in words[0]):
-        words = words[1:]
-    if not words:
-        return None
-    prog = os.path.basename(words[0])
-    if prog not in CLIENTS:
-        return None
-    if prog == "ssh":
-        i = 1
-        while i < len(words):
-            w = words[i]
-            if w == "--":
-                i += 1
-                break
-            if w.startswith("-") and len(w) > 1:
-                letter = w[-1]
-                if letter in ARG_OPTS and len(w) == 2:      # the value is the next word
-                    i += 2
-                    continue
-                i += 1
-                continue
-            break
-        if i >= len(words):
-            return None
-        dest = words[i]
-        if dest.startswith("ssh://"):
-            dest = dest[6:].split("/", 1)[0].rsplit(":", 1)[0]
-        return prog, dest
-    # scp / rsync / sftp / sshfs / mosh: the first word with host: (or the last word)
-    for w in words[1:]:
-        if w.startswith("-"):
-            continue
-        m = re.match(r"^(?:[\w.\-]+@)?[\w.\-]+(?=:)", w)
-        if m and not w.startswith("/"):
-            return prog, m[0]
-    if prog in ("sftp", "mosh") and len(words) > 1 and not words[-1].startswith("-"):
-        return prog, words[-1]
-    return None
+    hit = parse_ssh(cmd)
+    return (hit["prog"], hit["dest"]) if hit else None
+
+
+def unmetafy(data):
+    """zsh writes bytes ≥ 0x83 of its history as 0x83 followed by the byte xor 0x20."""
+    if b"\x83" not in data:
+        return data
+    out, i = bytearray(), 0
+    while i < len(data):
+        b = data[i]
+        if b == 0x83 and i + 1 < len(data):
+            out.append(data[i + 1] ^ 0x20)
+            i += 2
+        else:
+            out.append(b)
+            i += 1
+    return bytes(out)
 
 
 _hist_cache = [None, None]
 
 
 def history():
-    """[(time or None, command, prog, destination)] of the ssh-family commands in your
-    shell history, oldest first (zsh's extended history has the times)."""
+    """[(time or None, command, prog, destination, parsed)] of the ssh-family commands in your
+    shell history, oldest first (zsh's extended history and bash's HISTTIMEFORMAT have the times)."""
     stamp = tuple((p, os.path.getmtime(p)) for p in HISTORY if os.path.exists(p))
     if _hist_cache[0] == stamp:
         return _hist_cache[1]
@@ -270,17 +387,23 @@ def history():
                 data = f.read()
         except OSError:
             continue
-        text = data.decode("utf-8", "replace")
+        text = unmetafy(data).decode("utf-8", "replace")
+        when = None
         for line in text.splitlines():
-            when = None
-            m = re.match(r"^: (\d+):\d+;(.*)$", line)
+            m = re.match(r"^: (\d+):\d+;(.*)$", line)          # zsh: ": 1730000000:0;cmd"
             if m:
                 when, line = int(m[1]), m[2]
-            if not any(c in line for c in CLIENTS) or len(line) > 500:
+            elif re.match(r"^#\d{9,11}$", line):             # bash: "#1730000000" before the command
+                when = int(line[1:])
                 continue
-            hit = parse_command(line)
+            if not any(c in line for c in CLIENTS) or len(line) > 500:
+                when = None
+                continue
+            hit = parse_ssh(line)
             if hit:
-                out.append((when, line, hit[0], hit[1]))
+                out.append((when, line, hit["prog"], hit["dest"], hit))
+            when = None
+    out.sort(key=lambda h: h[0] or 0)                      # zsh and bash together, by time
     _hist_cache[0], _hist_cache[1] = stamp, out
     return out
 
@@ -289,9 +412,13 @@ def host_of(dest):
     return dest.rsplit("@", 1)[-1]
 
 
+GIT_SSH = ("git-upload-pack", "git-receive-pack", "git-upload-archive", "git-lfs-authenticate", "git-lfs-transfer")
+
+
 def live():
-    """{destination host: [(pid, kind, command)]} of the ssh processes running now
-    (kind: 'session', 'tunnel' or 'command') · git's own ssh calls are left out."""
+    """{destination host: [(pid, kind, command, forwards)]} of the ssh processes running now ·
+    kind: 'tunnel' (ssh -N: forwards only), 'session' (a shell, maybe with forwards) or
+    'command' · git's own ssh, control commands and this pane's own checks are left out."""
     rc, out, _ = run(["ps", "-axo", "pid=,args="], timeout=5)
     found = {}
     for line in out.splitlines():
@@ -299,19 +426,16 @@ def live():
         args = args.strip()
         if not pid.isdigit() or not re.match(r"^(\S*/)?ssh(\s|$)", args):
             continue
-        if "git-upload-pack" in args or "git-receive-pack" in args or " -G " in f" {args} " or " -O " in f" {args} ":
+        hit = parse_ssh(args)
+        if not hit or hit["prog"] != "ssh":
             continue
-        hit = parse_command(args)
-        if not hit:
+        if hit["flags"] & {"G", "O", "Q", "V"} or any(g in " ".join(hit["rest"]) for g in GIT_SSH):
             continue
-        words = args.split()
-        tunnel = "-N" in words or any(w in ("-L", "-R", "-D") or w.startswith(("-L", "-R", "-D")) for w in words[1:])
-        try:
-            rest = args.split(hit[1], 1)[1].strip()
-        except IndexError:
-            rest = ""
-        kind = "tunnel" if tunnel else ("command" if rest else "session")
-        found.setdefault(host_of(hit[1]), []).append((int(pid), kind, args))
+        batch = any(o.lower().replace(" ", "") == "batchmode=yes" for o in hit["opts"].get("o", []))
+        if batch and "N" not in hit["flags"]:
+            continue                             # a login test or an account check (ssh_hosts.py)
+        kind = "tunnel" if "N" in hit["flags"] else ("command" if hit["rest"] else "session")
+        found.setdefault(host_of(hit["dest"]), []).append((int(pid), kind, args, hit["fwd"]))
     return found
 
 
@@ -322,7 +446,7 @@ def probe(host, port, timeout=3.0):
     try:
         with socket.create_connection((host, int(port or 22)), timeout=timeout):
             return int((time.monotonic() - start) * 1000), ""
-    except socket.gaierror:
+    except (socket.gaierror, ValueError):        # ValueError: a name idna refuses (too long, U+FFFD)
         return None, "unknown name"
     except socket.timeout:
         return None, "no answer"
@@ -332,7 +456,7 @@ def probe(host, port, timeout=3.0):
         return None, (e.strerror or "unreachable").lower()
 
 
-ACCOUNT = [re.compile(r"Hi ([\w.\-]+)!"), re.compile(r"Welcome to GitLab, @([\w.\-]+)!"),
+ACCOUNT = [re.compile(r"Hi ([\w.\-/]+)!"), re.compile(r"Welcome to GitLab, @([\w.\-]+)!"),
            re.compile(r"logged in as ([\w.\-]+)"), re.compile(r"Hi there, ([\w.\-]+)!"),
            re.compile(r"Hi ([\w.\-]+), You've successfully authenticated")]
 
@@ -358,31 +482,46 @@ def login_problem(err):
     return lines[-1][:60] if lines else "failed"
 
 
+# a check opens no forward of the config, runs no RemoteCommand, asks for no terminal
+CHECK = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "RemoteCommand=none", "-o", "RequestTTY=no",
+         "-o", "ClearAllForwardings=yes", "-o", "ControlMaster=no", "-o", "ControlPath=none"]
+
+
 def git_account(dest):
     """(account name, '') of the key a git host sees for dest · ('', why) when it says no."""
-    rc, out, err = run(["ssh", "-T", "-l", "git", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", dest], timeout=15)
+    rc, out, err = run(["ssh", "-T", "-l", "git", *CHECK, dest], timeout=15)
     text = out + err
     for rx in ACCOUNT:
         m = rx.search(text)
         if m:
             return m[1], ""
+    if "Shell access is not supported" in text or "successfully authenticated" in text:
+        return "authenticated", ""             # Azure DevOps and others: the key works, no name given
     return "", login_problem(text)
 
 
 def test_login(dest):
     """('', '') when a login works without a password · ('', why) otherwise."""
-    rc, out, err = run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-T", dest, "true"], timeout=15)
+    rc, out, err = run(["ssh", *CHECK, "-T", dest, "true"], timeout=15)
+    return ("login ok", "") if rc == 0 else ("", login_problem(err))
+
+
+def test_login_args(extra, dest):
+    """test_login with the options of a command from your history (-p 2222…)."""
+    rc, out, err = run(["ssh", *CHECK, *extra, "-T", dest, "true"], timeout=15)
     return ("login ok", "") if rc == 0 else ("", login_problem(err))
 
 
 def known_host(cfg):
     """The key type known_hosts has for this host ('ED25519'…) or ''."""
-    name = cfg.get("hostkeyalias") or cfg.get("hostname", "")
+    alias = cfg.get("hostkeyalias", "none")
+    name = alias if alias != "none" else cfg.get("hostname", "")
     port = cfg.get("port", "22")
     if not name:
         return ""
-    target = name if port == "22" else f"[{name}]:{port}"
-    files = [os.path.expanduser(f) for f in cfg.get("userknownhostsfile", "~/.ssh/known_hosts").split()]
+    target = name if port == "22" or alias != "none" else f"[{name}]:{port}"
+    files = [os.path.expanduser(f) for f in (cfg.get("userknownhostsfile", "~/.ssh/known_hosts").split()
+                                             + cfg.get("globalknownhostsfile", "").split())]
     for f in files:
         if not os.path.exists(f):
             continue
@@ -405,9 +544,15 @@ def keys():
     out, seen = [], set()
     try:
         names = sorted(os.listdir(SSH_DIR))
-        stamp = tuple((n, os.path.getmtime(os.path.join(SSH_DIR, n))) for n in names)
     except OSError:
         return []
+    stamp = []
+    for n in names:                            # one that vanishes meanwhile (a socket) is just left out
+        try:
+            stamp.append((n, os.path.getmtime(os.path.join(SSH_DIR, n))))
+        except OSError:
+            pass
+    stamp = tuple(stamp)
     if _keys_cache[0] == stamp:
         return _keys_cache[1]
     for name in names:
@@ -423,7 +568,7 @@ def keys():
             continue
         pub = path + ".pub" if os.path.exists(path + ".pub") else ""
         rc, text, _ = run(["ssh-keygen", "-lf", pub or path], timeout=5)
-        m = re.match(r"(\d+) (\S+) (.*) \((\w+)\)$", text.strip())
+        m = re.match(r"(\d+) (\S+) (.*) \(([\w-]+)\)$", text.strip())    # ED25519-SK too
         bits, fp, comment, kind = (m.groups() if m else ("", "", "", "?"))
         encrypted = is_encrypted(head)
         seen.add(path)
@@ -460,7 +605,7 @@ def agent_keys():
         return {}, "no ssh-agent running"
     held = {}
     for line in out.splitlines():
-        m = re.match(r"(\d+) (\S+) (.*) \((\w+)\)$", line.strip())
+        m = re.match(r"(\d+) (\S+) (.*) \(([\w-]+)\)$", line.strip())
         if m:
             held[m[2]] = (m[4], m[3])
     return held, ""
