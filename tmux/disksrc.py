@@ -245,7 +245,7 @@ class Measure:
                 if size >= self.KEEP_MIN or path.count("/") - self.depth <= self.KEEP_DEPTH:
                     self.sizes[path] = size
                 self.count += 1
-            if time.monotonic() - last > 0.5:
+            if time.monotonic() - last > 1:
                 last = time.monotonic()
                 self.on_progress()
         self.proc.wait()
@@ -283,8 +283,9 @@ class Measure:
 
     def small(self, path):
         """du measured path and left it out (deep, and under KEEP_MIN): its size is below that."""
+        # (by name, not covers(): a stat per row is 1 ms on /mnt/c · other disks the caller rules out)
         return (self.done and not self.cancelled and path not in self.sizes
-                and path.count("/") - self.depth > self.KEEP_DEPTH and self.covers(path))
+                and path.count("/") - self.depth > self.KEEP_DEPTH and path.startswith(self.root.rstrip("/") + "/"))
 
     def partial(self, path):
         """Some folder at or under path could not be read: its size is a lower bound."""

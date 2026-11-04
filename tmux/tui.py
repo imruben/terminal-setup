@@ -61,38 +61,61 @@ KEEP_CODE = re.compile(r"\x1b\[[0-9;]*m|\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)|\x1b
 COLUMN = re.compile(r"\x1b\[(\d*)G")
 
 
+_CTRL = {c: "?" for c in range(32)}
+_CTRL[9], _CTRL[127] = " ", "?"
+
+
 def cut(s, n):
     """First n visible cells of s, keeping its colour codes (and links), so no line ever wraps ·
-    a tab is one space and other control characters show as ?, so the width is what tmux draws."""
-    out, vis, i, full, prev = [], 0, 0, False, 0
-    while i < len(s):
-        m = ANSI.match(s, i)
-        if m:
-            if KEEP_CODE.fullmatch(m.group()):
-                col = COLUMN.fullmatch(m.group())
-                if col:                           # to column N: what follows starts there
-                    vis = max(vis, int(col[1] or 1) - 1)
-                    if vis >= n:
-                        full = True
-                        i = m.end()
-                        continue
-                out.append(m.group())             # other sequences (cursor moves…) are dropped
-            i = m.end()
-            continue
-        if not full:
-            ch = s[i]
-            if ch == "\t":
-                ch = " "
-            elif ch < " " or ch == "\x7f":
-                ch = "?"
-            w = 1 if ch == "\ufe0f" and prev == 1 else cw(ch)
-            if vis + w <= n:
-                out.append(ch)
-                vis += w
-                prev = w if ch != "\ufe0f" else 0
+    a tab is one space and other control characters show as ?, so the width is what tmux draws.
+    (The text between codes is taken a run at a time, an ASCII run as one slice: this runs for
+    every row of every pane on every draw.)"""
+    if "\x1b" not in s and s.isascii() and s.isprintable():
+        return s[:max(0, n)]
+    out, vis, full, prev, pos = [], 0, False, 0, 0
+    for m in [*ANSI.finditer(s), None]:
+        end = m.start() if m else len(s)
+        if pos < end and not full:
+            run = s[pos:end]
+            if run.isascii():
+                run = run.translate(_CTRL)
+                room = n - vis
+                if len(run) <= room:
+                    out.append(run)
+                    vis += len(run)
+                    prev = 1
+                else:
+                    if room > 0:
+                        out.append(run[:room])
+                        vis += room
+                    full = True
             else:
-                full = True               # a wide character that does not fit ends the text
-        i += 1
+                for ch in run:
+                    if ch == "\t":
+                        ch = " "
+                    elif ch < " " or ch == "\x7f":
+                        ch = "?"
+                    w = 1 if ch == "\ufe0f" and prev == 1 else cw(ch)
+                    if vis + w <= n:
+                        out.append(ch)
+                        vis += w
+                        prev = w if ch != "\ufe0f" else 0
+                    else:
+                        full = True               # a wide character that does not fit ends the text
+                        break
+        if m is None:
+            break
+        g = m.group()
+        if KEEP_CODE.fullmatch(g):
+            col = COLUMN.fullmatch(g)
+            if col:                               # to column N: what follows starts there
+                vis = max(vis, int(col[1] or 1) - 1)
+                if vis >= n:
+                    full = True
+                    pos = m.end()
+                    continue
+            out.append(g)                         # other sequences (cursor moves…) are dropped
+        pos = m.end()
     return "".join(out)
 
 
@@ -127,6 +150,8 @@ def wrap(line, width, indent="  "):
     """Split a line (with colour codes) into pieces of `width` visible cells, at a space
     when there is one in the second half of the piece (else mid-word, e.g. a long URL)."""
     width = max(width, len(indent) + 2)       # room for at least one (wide) character
+    if vlen(line) <= width:                  # most lines fit: nothing to split
+        return [line]
     out, cur, vis, i = [], [], 0, 0          # cur: tokens (colour codes and single characters)
     start = 0                                # cells the current piece began with (its indent)
     while i < len(line):
@@ -369,6 +394,7 @@ class Screen:
                 os.write(wake_w, byte)
             except OSError:                       # the pipe is full: a wake is pending anyway
                 pass
+        self.poke = poke                          # (background work: poke(b"r"), an answer is ready)
         signal.signal(signal.SIGWINCH, lambda *_: poke(b"."))
         signal.signal(signal.SIGUSR1, lambda *_: poke(b"v"))
         # killed or its terminal closed: leave through __exit__, which gives the terminal back
@@ -455,6 +481,8 @@ class Screen:
                 pokes = os.read(self.wake_r, 64)
                 if b"v" in pokes:
                     yield ("wake",)
+                if b"r" in pokes:                          # background work: an answer is ready
+                    yield ("ready",)
                 if b"." in pokes:
                     yield ("resize",)
                 if self.fd not in r:

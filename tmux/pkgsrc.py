@@ -60,6 +60,41 @@ def human(n):
         n /= 1024
 
 
+# ─── answers kept while the files they come from stay the same ───
+# apt list --upgradable (0.3 s CPU), apt-mark + dpkg-query, brew outdated (Ruby: seconds) gave the
+# same answer every 30-60 s: now they are asked again only when what they read changed (an
+# install, an apt update, a brew update), or after KEEP_MAX anyway
+KEEP_MAX = 1800
+_memo = {}
+_memo_lock = threading.Lock()
+
+
+def files_stamp(*paths):
+    """What changes when any of paths changes: their mtimes and sizes (a folder's mtime moves when a
+    file in it is added, removed or replaced, as apt and brew do)."""
+    out = []
+    for p in paths:
+        try:
+            st = os.stat(p)
+            out.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            out.append(None)
+    return tuple(out)
+
+
+def memo(key, stamp, fn):
+    """fn()'s answer, kept while stamp stays the same (and for KEEP_MAX at most) · a copy, so a
+    pane changing its rows does not change the kept ones."""
+    with _memo_lock:
+        hit = _memo.get(key)
+    if hit and hit[0] == stamp and time.monotonic() - hit[1] < KEEP_MAX:
+        return [dict(r) for r in hit[2]]
+    rows = fn()
+    with _memo_lock:
+        _memo[key] = (stamp, time.monotonic(), rows)
+    return [dict(r) for r in rows]
+
+
 def dir_size(path):
     total = 0
     for root, _, files in os.walk(path):
@@ -192,7 +227,12 @@ class Apt:
         return None
 
     def mine(self):
-        """Manual packages minus the ones the system came with (same as `installed-packages`)."""
+        """Manual packages minus the ones the system came with (same as `installed-packages`) ·
+        asked again when dpkg, apt's marks or the base list change."""
+        return memo("apt-mine", files_stamp("/var/lib/dpkg/status", "/var/lib/apt/extended_states", self.BASE),
+                    self._mine)
+
+    def _mine(self):
         base = self.base()
         if base is None:
             self.error, self.base_count, base = ("apt: no record of the packages the system came with "
@@ -215,6 +255,12 @@ class Apt:
         return rows
 
     def updates(self):
+        """apt list --upgradable · asked again when the lists (apt update), dpkg (an install, a
+        hold) or the pins change."""
+        return memo("apt-updates", files_stamp("/var/lib/dpkg/status", "/var/lib/apt/lists", "/var/cache/apt/pkgcache.bin",
+                                               "/etc/apt/preferences.d", "/etc/apt/preferences"), self._updates)
+
+    def _updates(self):
         rows, held, native = [], self.held(), self.arch()
         for line in run_text("apt", "list", "--upgradable").splitlines():
             m = self.LINE.match(line)
@@ -227,7 +273,9 @@ class Apt:
         return rows
 
     def checked(self):
-        stamp = next((p for p in ("/var/lib/apt/periodic/update-success-stamp", "/var/cache/apt/pkgcache.bin")
+        # (not pkgcache.bin: any apt install rebuilds it, so it would say "checked just now" with no
+        # apt update · the lists folder changes only on an update)
+        stamp = next((p for p in ("/var/lib/apt/periodic/update-success-stamp", "/var/lib/apt/lists")
                       if os.path.exists(p)), None)
         return os.path.getmtime(stamp) if stamp else None
 
@@ -565,6 +613,14 @@ class Brew:
         return [dict(r) for r in rows]
 
     def updates(self):
+        """brew outdated · asked again when something is installed or upgraded, brew updates
+        itself (its git or API cache) or a pin changes."""
+        st = (self.stamp(), files_stamp(os.path.join(self.PREFIX, "Homebrew", ".git", "FETCH_HEAD"),
+                                        os.path.join(self.PREFIX, ".git", "FETCH_HEAD"), self.api_dir(),
+                                        os.path.join(self.PREFIX, "var", "homebrew", "pinned")))
+        return memo("brew-updates", st, self._updates)
+
+    def _updates(self):
         try:
             d = json.loads(self.brew("outdated", "--json=v2"))
         except ValueError:

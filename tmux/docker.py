@@ -16,6 +16,7 @@ import json
 import os
 import platform
 import re
+import select
 import shlex
 import shutil
 import subprocess
@@ -95,32 +96,112 @@ def human(n):
         n /= 1024
 
 
+STATS_FRAME = re.compile(rb"\x1b\[2J|\x1b\[H")      # docker stats starts each refresh by clearing
+
+
 class Stats(threading.Thread):
-    """docker stats --no-stream takes ~1 s: keep fresh numbers without blocking the pane.
-    Only while the pane is in sight (`wanted`): it is the heaviest thing the monitor runs."""
+    """CPU and memory of every container, from one `docker stats` that keeps running (it prints
+    a fresh table every second) while the pane is in sight (`wanted`), ended out of sight.
+    Not `docker stats --no-stream` in a loop: each of those takes ~2 s and costs dockerd far
+    more (it starts sampling every container again) · it was the heaviest thing the monitor ran."""
 
     def __init__(self):
         super().__init__(daemon=True)
         self.data = {}
         self.wanted = threading.Event()
 
+    @staticmethod
+    def parse(block):
+        """One refresh (the JSON lines between two clears) → {name: (cpu %, used, limit)}."""
+        data = {}
+        for line in block.decode("utf-8", "replace").splitlines():
+            line = line.replace("\x1b[K", "").strip()
+            if not line.startswith("{"):
+                continue
+            # a container caught stopping or restarting shows "--": no numbers for it
+            try:
+                s = json.loads(line)
+                cpu = float(s.get("CPUPerc", "0%").rstrip("%") or 0)
+            except ValueError:
+                continue
+            used, _, limit = s.get("MemUsage", "").partition("/")
+            data[s.get("Name")] = (cpu, mem_bytes(used), mem_bytes(limit))
+        return data
+
     def run(self):
         while True:
             self.wanted.wait()
-            res = docker("stats", "--no-stream", "--format", "{{json .}}", timeout=20)
-            if res and res.returncode == 0:
-                data = {}
-                for line in res.stdout.splitlines():
-                    # a container caught stopping or restarting shows "--": no numbers for it
-                    try:
-                        s = json.loads(line)
-                        cpu = float(s.get("CPUPerc", "0%").rstrip("%") or 0)
-                    except ValueError:
-                        continue
-                    used, _, limit = s.get("MemUsage", "").partition("/")
-                    data[s.get("Name")] = (cpu, mem_bytes(used), mem_bytes(limit))
-                self.data = data
-            time.sleep(3)
+            try:                                  # started here: this thread lives as long as the pane
+                proc = subprocess.Popen(["docker", "stats", "--format", "{{json .}}"], stdout=subprocess.PIPE,
+                                        stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                                        preexec_fn=tmuxlink.die_with_parent)
+            except OSError:
+                time.sleep(15)
+                continue
+            buf = b""
+            # read with a timeout, not by line: with no containers a refresh is only the clear
+            # codes, no newline, and the read must still notice the pane went out of sight
+            while self.wanted.is_set() and proc.poll() is None:
+                ready, _, _ = select.select([proc.stdout], [], [], 2)
+                if not ready:
+                    continue
+                chunk = os.read(proc.stdout.fileno(), 65536)
+                if not chunk:
+                    break
+                buf += chunk
+                parts = STATS_FRAME.split(buf)
+                # every part but the last is a whole refresh (the last may still be arriving)
+                for part in reversed(parts[:-1]):
+                    if part.strip():
+                        self.data = self.parse(part)
+                        break
+                buf = parts[-1][-262144:]
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+            if self.wanted.is_set():
+                time.sleep(3)                     # it ended by itself (no Docker): try again later
+
+
+class Events(threading.Thread):
+    """`docker events` for containers while the pane is in sight: a container that starts, stops,
+    restarts, dies or changes health is read again at once (on_change), so `docker ps -a` itself
+    (70-90 ms of dockerd each time) is asked only every READ_EVERY seconds otherwise."""
+
+    def __init__(self, wanted, on_change):
+        super().__init__(daemon=True)
+        self.wanted, self.on_change = wanted, on_change
+
+    def run(self):
+        while True:
+            self.wanted.wait()
+            try:
+                proc = subprocess.Popen(["docker", "events", "--filter", "type=container", "--format", "{{.Action}}"],
+                                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                                        preexec_fn=tmuxlink.die_with_parent)
+            except OSError:
+                time.sleep(15)
+                continue
+            buf = b""
+            while self.wanted.is_set() and proc.poll() is None:
+                ready, _, _ = select.select([proc.stdout], [], [], 2)
+                if ready:
+                    chunk = os.read(proc.stdout.fileno(), 65536)
+                    if not chunk:
+                        break
+                    *lines, buf = (buf + chunk).split(b"\n")     # (the last one may still be arriving)
+                    # exec_* (exec_create: /bin/sh -c pg_isready…) are `docker exec` into a container,
+                    # which every healthcheck is, a few a second in all: nothing in the list changes
+                    if any(line.strip() and not line.startswith(b"exec_") for line in lines):
+                        self.on_change()
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+            if self.wanted.is_set():
+                time.sleep(5)                     # it ended by itself (Docker restarting): later
+
+
+READ_EVERY = 15      # seconds between `docker ps -a` when no event said something changed
 
 
 class Containers(TableApp):
@@ -144,12 +225,18 @@ class Containers(TableApp):
     def __init__(self, screen):
         self.stats = Stats()
         self.stats.start()
+        Events(self.stats.wanted, self.changed).start()     # (in sight together with the stats)
         self.arch_cache = {}
         self.error = ""
         self.bg = Background(self.wake, fallback=lambda: None)
         super().__init__(screen)
         if self.visible:
             self.stats.wanted.set()
+
+    def changed(self):
+        """A container event (from the Events thread): read the list again now."""
+        self.bg.forget(("reading",))
+        self.wake()
 
     def read(self):
         """docker ps + inspect, in a thread (a slow or hung daemon must not freeze the pane) ·
@@ -220,7 +307,7 @@ class Containers(TableApp):
         return self.arch_cache.get(c["Image"], "?")        # read in the thread (read())
 
     def fetch(self):
-        got = self.bg.get(("reading",), self.read, 2.5)
+        got = self.bg.get(("reading",), self.read, READ_EVERY)
         if got is None:
             return self.all                      # the first answer is on its way
         rows = []
@@ -257,7 +344,10 @@ class Containers(TableApp):
         up = [r for r in self.all if r["state"] == "running"]
         cpu = sum(r["cpu"] or 0 for r in up)
         mem = sum(r["mem_b"] or 0 for r in up)
-        parts = [f"{TEXT}{len(up)} up", f"{DIM}CPU {cpu:.1f}%", f"MEM {human(mem)}"]
+        if self.stats.data or not up:
+            parts = [f"{TEXT}{len(up)} up", f"{DIM}CPU {cpu:.1f}%", f"MEM {human(mem)}"]
+        else:                                    # docker stats' first sample is on its way: not 0%
+            parts = [f"{TEXT}{len(up)} up", f"{DIM}CPU …", "MEM …"]
         emu = sum(1 for r in self.all if r["emulated"])
         if emu:
             parts.append(f"{YELLOW}{emu} emulated{DIM}")
@@ -285,7 +375,7 @@ class Containers(TableApp):
 
     # ─── talking to the other panes ───
     def selected(self, r):
-        tmuxlink.put("@docker-selected", r["name"] if r else "")
+        tmuxlink.publish("@docker-selected", r["name"] if r else "")
 
     watch = ("@docker-focus",)
 

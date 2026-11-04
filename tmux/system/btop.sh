@@ -51,6 +51,9 @@ while kill -0 "$pid" 2>/dev/null; do
   if [[ $visible == 0 && $stopped == 0 ]]; then kill -STOP "$pid" 2>/dev/null; stopped=1
   elif [[ $visible != 0 && $stopped == 1 ]]; then kill -CONT "$pid" 2>/dev/null; stopped=0
   fi
-  sleep 5 & wait $!; kill $! 2>/dev/null
+  # stopped: tmux's hooks wake this (SIGUSR1) when it comes into sight, so a slow look is a safety
+  # net · in sight: every 5 s, to notice it went out of sight
+  if (( stopped )); then sleep 30 & else sleep 5 & fi
+  wait $!; kill $! 2>/dev/null
 done
 wait "$pid"

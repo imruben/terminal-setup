@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -41,6 +42,44 @@ def clean(text):
     return "".join("?" if ord(c) < 32 or ord(c) == 127 else c for c in text)
 
 
+def refs_stamp(repo):
+    """What changes when a commit, checkout, reset, fetch, branch or stash happens: the times of
+    HEAD, the index, its reflog, packed-refs, FETCH_HEAD and every folder under refs/ (git writes a
+    ref as a new file renamed into place, so its folder's time moves) · cheap: a few stats."""
+    gdir = gitsrc.git_dir(repo)
+    cdir = gitsrc.common_dir(gdir)
+    out = []
+    for p in (os.path.join(gdir, "HEAD"), os.path.join(gdir, "index"), os.path.join(gdir, "logs", "HEAD"),
+              os.path.join(cdir, "packed-refs"), os.path.join(cdir, "FETCH_HEAD"), os.path.join(cdir, "config")):
+        try:
+            st = os.stat(p)
+            out.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            out.append(None)
+    for root, dirs, _ in os.walk(os.path.join(cdir, "refs")):
+        try:
+            out.append((root, os.stat(root).st_mtime_ns))
+        except OSError:
+            pass
+    return tuple(out)
+
+
+def worktree_stamp(repo):
+    """refs_stamp plus each changed file's time and size (git status): editing a file moves no
+    git file, and the diff must notice it."""
+    res = git(repo, "status", "--porcelain=v1", "-z", "--untracked-files=normal")
+    files = []
+    for entry in (res.stdout.split("\0") if res and res.returncode == 0 else []):
+        path = entry[3:]
+        if path:
+            try:
+                st = os.lstat(os.path.join(repo, path))
+                files.append((path, st.st_mtime_ns, st.st_size))
+            except OSError:
+                files.append((path, None, None))
+    return refs_stamp(repo), tuple(files)
+
+
 def head_exists(repo):
     res = git(repo, "rev-parse", "--verify", "--quiet", "HEAD")
     return bool(res and res.returncode == 0)
@@ -51,7 +90,7 @@ class Repo(BackgroundViewer):
     title = "Repo"
     option = "@git-selected"
     tabs = ["Status", "Diff", "Log", "Branches", "Stash"]
-    interval = 0.3
+    interval = 1.0                # (the master wakes it when the selection changes: tmuxlink.publish)
     refresh_every = 4
     empty = "highlight a repo in the Repos pane"
 
@@ -63,9 +102,26 @@ class Repo(BackgroundViewer):
         finally:
             self.key = key
 
+    _same = {}          # (repo, tab, width) → (stamp, lines): unchanged repo, the lines it had
+
     def compute(self, repo, tab, width):                # in a thread (BackgroundViewer)
         if not os.path.isdir(repo):
             return [f"  {YELLOW}{tilde(repo)} is gone"]
+        if tab == "Status":
+            return self.overview(repo)                  # (cheap, and shows untracked counts, ahead…)
+        # the other tabs are asked again (every refresh_every) only when the repo changed: a diff
+        # through delta of a busy repo takes ~0.2 s of CPU, the same answer every 4 s
+        stamp = worktree_stamp(repo) if tab == "Diff" else refs_stamp(repo)
+        hit = Repo._same.get((repo, tab, width))
+        if hit and hit[0] == stamp and time.monotonic() - hit[2] < 60:   # (60 s: "3 minutes ago" moves on)
+            return hit[1]
+        lines = self.tab_lines(repo, tab, width)
+        if len(Repo._same) > 32:
+            Repo._same.clear()
+        Repo._same[(repo, tab, width)] = (stamp, lines, time.monotonic())
+        return lines
+
+    def tab_lines(self, repo, tab, width):
         if tab == "Diff":
             return self.diff(repo, width)
         if tab == "Log":

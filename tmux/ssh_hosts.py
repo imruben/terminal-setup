@@ -106,7 +106,9 @@ class Hosts(TableApp):
         stamp = sshsrc.config_stamp()
         hosts = sshsrc.concrete_hosts()
         aliases = [a for a, _ in hosts]
-        hist = sshsrc.history()
+        # in the background: when zsh rewrites the history file (100k lines) reading it again takes
+        # a quarter of a second, which would freeze the pane (unchanged it is a cached answer)
+        hist = self.bg.get(("history",), sshsrc.history, 3) or []
         # what history reached by hand: user@address of a configured host counts as that host
         cfgs = self.bg.get_for(("reading",), (stamp, tuple(aliases)), lambda: self.resolve_all(aliases), 300) or {}
         by_address = {}
@@ -264,7 +266,7 @@ class Hosts(TableApp):
         return r["alias"]
 
     def selected(self, r):
-        tmuxlink.put("@ssh-selected", r["alias"] if r else "")
+        tmuxlink.publish("@ssh-selected", r["alias"] if r else "")
 
     # ─── menu ───
     def menu_items(self, r):

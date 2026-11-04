@@ -26,7 +26,8 @@ ACTIVE_TAB = bg("#89b4fa") + CRUST + BOLD
 SELECTED = bg("#585b70")
 WHEEL_STEP = 3
 TOP = 3            # first content row (1-based): title + tabs, rule, content…
-HIDDEN_CHECK = 10.0  # out of sight: seconds between looks (tmux normally wakes the pane first)
+HIDDEN_CHECK = 30.0  # out of sight: seconds between looks (tmux's hooks wake the pane first: a safety net)
+LOOK_EVERY = 2.0     # in sight: seconds between asking tmux what to show (a master's publish() wakes it first)
 ICON_ZOOM, ICON_UNZOOM, ICON_COPY, ICON_SELECT = "\U000F0293", "\U000F0294", "\U000F018F", "\U000F0489"
 
 
@@ -43,6 +44,7 @@ class Viewer:
 
     def __init__(self, screen):
         self.screen = screen
+        self._woken, self._looked = True, 0.0   # (poll(): ask tmux at once the first time)
         self.tab = 0
         self.key = None
         self.lines = []
@@ -90,7 +92,14 @@ class Viewer:
     def poll(self, force=False):
         """Out of sight it does nothing: the key and its contents are read once it is in sight
         (the system session starts with every tab; tmux wakes the pane, see tmuxlink.note_wake)."""
-        key = self.look()
+        # tmux is asked when something woke the pane (a master's selection, its tab in sight, a key)
+        # or every LOOK_EVERY: not on every tick (a fork each, 3 a second per pane)
+        now = time.monotonic()
+        if force or self._woken or now - self._looked >= LOOK_EVERY:
+            self._woken, self._looked = False, now
+            key = self.look()
+        else:
+            key = self.opts[self.option]
         if not self.visible or self.menu:        # a menu open: what it would copy stays as it was
             return
         stale = self.refresh_every and time.monotonic() - self.loaded_at > self.refresh_every
@@ -358,7 +367,10 @@ class BackgroundViewer(Viewer):
         super().__init__(screen)
 
     def _arrived(self):
-        self._ready = True                   # the next tick (every interval) redraws with them
+        self._ready = True                   # shown at once: the loop gets a "ready" (from this thread)
+        poke = getattr(self.screen, "poke", None)
+        if poke:
+            poke(b"r")
 
     def compute(self, key, tab, width):
         return []
@@ -396,8 +408,11 @@ def run(viewer_class):
             v.draw()
             for ev in screen.events(tick=v.interval if v.visible else HIDDEN_CHECK):
                 if ev[0] in ("mouse", "key", "char") and not v.visible:
+                    v._woken = True
                     v.tick()                                # input means it is in sight after all
                 if ev[0] in ("tick", "wake"):
+                    if ev[0] == "wake":
+                        v._woken = True                     # a master's selection, its tab in sight…
                     v.tick()
                     screen.tick = v.interval if v.visible else HIDDEN_CHECK
                     if not v.visible:
@@ -414,16 +429,19 @@ def run(viewer_class):
                     v.on_key(ev[1])
                 elif ev[0] == "char":
                     v.on_char(ev[1])
+                elif ev[0] == "ready":                     # background work (a log read, a save) answered
+                    if not v.visible:
+                        continue
+                    v.tick()                                # (no tmux call: it reads what arrived)
                 elif ev[0] == "resize":
-                    # background work (a whole-log read, a save) also wakes the pane this way:
-                    # only a real change of size closes an open menu
+                    # only a real change of size closes an open menu and asks tmux for the zoom
                     size = screen.size()
                     if size != getattr(v, "_size", None):
                         width_changed = size[1] != getattr(v, "_size", (0, 0))[1]
                         v._size, v.menu = size, None
                         if width_changed and v.key:            # wrapped for another width: again, once
                             v._rewrap_at = time.monotonic()    # the resize stops (no reload per step)
-                    v.zoomed = tmuxlink.pane_state("")[0]   # zoom / restore resize the pane
+                        v.zoomed = tmuxlink.pane_state("")[0]  # zoom / restore resize the pane
                 v.draw()
     except SystemExit as e:
         sys.exit(0 if e.code is None else e.code)

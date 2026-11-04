@@ -92,7 +92,7 @@ class Packages(SourcesPane, TableApp):
 
     def selected(self, r):
         if r:
-            tmuxlink.put("@pkg-selected", r["id"])
+            tmuxlink.publish("@pkg-selected", r["id"])
 
     def on_tick(self):
         if self.changed():                         # a package command ran in a popup: re-read

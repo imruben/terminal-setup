@@ -13,6 +13,7 @@
 
 import os
 import sys
+import time
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -33,7 +34,7 @@ class Search(SourcesPane, TableApp):
     master = True
     title = "Search"
     noun = "found"
-    interval = 0.4
+    interval = 1.0
     reload_every = float("inf")                 # it searches when the words change, not on a timer
     remote_query = True
     sort_key = "rank"
@@ -90,8 +91,17 @@ class Search(SourcesPane, TableApp):
                              "why": notes.get(note_key(s.name, r["name"]), "")})
         return rows
 
-    # typing only marks the search as pending; it runs on the next tick (no lag while typing)
+    # typing only marks the search as pending; it runs once typing pauses (TYPING_PAUSE), not for
+    # every prefix ("postgresql" would start apt, snap and brew searches for p, po, pos…)
+    TYPING_PAUSE = 0.35
+
+    def tick_every(self):
+        """Fast only while a search waits for typing to pause."""
+        return 0.15 if self.visible and self.pending else super().tick_every()
+
     def on_tick(self):
+        if self.pending and time.monotonic() - self.typed_at < self.TYPING_PAUSE:
+            return
         if self.changed() or self.pending:
             self.pending = False
             self.reload()
@@ -102,12 +112,12 @@ class Search(SourcesPane, TableApp):
             if kind == "char":
                 self.query += ev[1]
                 self.query_changed()
-                self.pending = True
+                self.pending, self.typed_at = True, time.monotonic()
                 return
             if kind == "key" and ev[1] in ("backspace", "ctrl-u", "esc"):
                 self.query = "" if ev[1] != "backspace" else self.query[:-1]
                 self.query_changed()
-                self.pending = True
+                self.pending, self.typed_at = True, time.monotonic()
                 return
         super().dispatch(ev)
 
@@ -136,7 +146,7 @@ class Search(SourcesPane, TableApp):
 
     def selected(self, r):
         if r:
-            tmuxlink.put("@pkg-selected", r["id"])
+            tmuxlink.publish("@pkg-selected", r["id"])
 
     def menu_title(self, r):
         return f"{r['name']} · {r['src']}"

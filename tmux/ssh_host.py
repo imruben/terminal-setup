@@ -40,7 +40,7 @@ class Host(BackgroundViewer):
     title = "Host"
     option = "@ssh-selected"
     tabs = ["Info", "Config", "Recent"]
-    interval = 0.3
+    interval = 1.0                # (the master wakes it when the selection changes: tmuxlink.publish)
     refresh_every = 5
     empty = "highlight a host in the Hosts pane"
 

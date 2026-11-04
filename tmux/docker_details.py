@@ -202,12 +202,22 @@ def mask_secrets(text):
     return "\n".join(out)
 
 
+_shown_files = {}       # (path, its mtime and size, language, width) → lines
+
+
 def show_file(path, language, width):
     # bat wraps the file itself (to the pane width); viewer wrapping only adds an indent
-    """A file as coloured lines (bat) or plain ones."""
-    with open(path, encoding="utf-8", errors="replace") as f:
-        text = mask_secrets(f.read().expandtabs(4))      # secrets never reach the screen
-    return show_text(text, language, width)
+    """A file as coloured lines (bat) or plain ones · kept while the file stays the same (the tab
+    is asked again every few seconds: bat each time was 20-30 ms for the same lines)."""
+    st = os.stat(path)
+    key = (path, st.st_mtime_ns, st.st_size, language, width)
+    if key not in _shown_files:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = mask_secrets(f.read().expandtabs(4))      # secrets never reach the screen
+        if len(_shown_files) > 32:
+            _shown_files.clear()
+        _shown_files[key] = show_text(text, language, width)
+    return list(_shown_files[key])
 
 
 class Details(BackgroundViewer):
@@ -215,7 +225,7 @@ class Details(BackgroundViewer):
     title = "Container"
     option = "@docker-selected"
     tabs = ["Details", "Dockerfile", "Compose", "Merged"]
-    interval = 0.3
+    interval = 1.0                # (the master wakes it when the selection changes: tmuxlink.publish)
     refresh_every = 5
     wrap_lines = True
     empty = "highlight a container in the Containers pane"
@@ -243,8 +253,10 @@ class Details(BackgroundViewer):
         if key not in self.compose_cache:
             args = [a for f in files for a in ("-f", f)] + [a for e in envs if os.path.exists(e) for a in ("--env-file", e)]
             res = docker("compose", *args, "config", "--format", "json", cwd=wd if os.path.isdir(wd) else None)
+            if res is None:
+                return {}                  # no answer in time (Docker busy): not kept, asked again next time
             try:
-                self.compose_cache[key] = json.loads(res.stdout) if res and res.returncode == 0 else {}
+                self.compose_cache[key] = json.loads(res.stdout) if res.returncode == 0 else {}
             except ValueError:
                 self.compose_cache[key] = {}
         return self.compose_cache[key]

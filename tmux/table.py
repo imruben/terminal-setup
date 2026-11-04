@@ -34,7 +34,8 @@ from tui import (ACCENT, BOLD, CLEAR_EOL, CRUST, DANGER_BG, DIM, GREEN, HOVER, R
 ACTIVE_ZOOM = bg("#89b4fa") + CRUST + BOLD
 
 WHEEL_STEP = 3
-HIDDEN_CHECK = 10.0  # out of sight: seconds between looks (tmux normally wakes the pane first)
+HIDDEN_CHECK = 30.0  # out of sight: seconds between looks (tmux's hooks wake the pane first: a safety net)
+LOOK_EVERY = 2.0     # in sight: seconds between asking tmux about sight, zoom and the options it watches
 ICON_ZOOM, ICON_UNZOOM, ICON_COPY, ICON_SELECT = "\U000F0293", "\U000F0294", "\U000F018F", "\U000F0489"
 TOP = 3            # first data row on screen (1-based): title, column titles, rows…, footer
 
@@ -168,8 +169,22 @@ class TableApp:
         return bool(self.menu or self.ask or self.prompt)
 
     def tick_every(self):
-        """Seconds between ticks: master tables tick fast to notice a pointer resting on a row."""
-        return (0.12 if self.master else self.interval) if self.visible else HIDDEN_CHECK
+        """Seconds between ticks: a master table ticks fast only while a pointer rests on a row that
+        is not the selection yet (to notice the dwell), at its interval otherwise."""
+        if not self.visible:
+            return HIDDEN_CHECK
+        if self.master and self.hover_at and self.cur_id != self.sel_id:
+            return 0.12
+        return self.interval
+
+    def view_state(self):
+        """What a pointer move can change on screen: unchanged → no redraw (a move inside one row
+        sends dozens of events) · a question or a prompt open: always drawn."""
+        m = self.menu
+        if self.ask or self.prompt:
+            return object()
+        return (self.cur_id, self.hover_col, self.top, self.sel_id, self.msg, id(m),
+                m and m.cur, m and m.off)
 
     def reload(self):
         self.reloaded_at = time.monotonic()
@@ -416,8 +431,9 @@ class TableApp:
         threading.Thread(target=work, daemon=True).start()
 
     def wake(self):
-        """Ask the event loop to refresh now (used by background work)."""
-        os.kill(os.getpid(), __import__("signal").SIGWINCH)
+        """Ask the event loop to refresh now (used by background work, from any thread): its own
+        event, not a resize (which would also ask tmux for the zoom and close a menu)."""
+        self.screen.poke(b"r")
 
     def popup(self, title, command, w="90%", h="80%", env=None):
         """Open a tmux popup over this pane (logs, a shell, apt…) · env: {VAR: value} it gets."""
@@ -515,7 +531,12 @@ class TableApp:
         if kind in ("key", "char") or (kind == "mouse" and not ev[1] & 32 and ev[1] not in (64, 65)):
             self._moved = True                       # a key or a click: what happens now is yours
         if kind in ("tick", "wake"):
-            self.zoomed, self.visible, self.opts = tmuxlink.pane_view(*self.watch)
+            # tmux is asked on a wake (its tab in sight, a master's selection) or every LOOK_EVERY,
+            # not on every tick (a fork each: once a second per pane with a 1 s interval)
+            now = time.monotonic()
+            if kind == "wake" or not self.visible or now - getattr(self, "_looked", 0.0) >= LOOK_EVERY:
+                self._looked = now
+                self.zoomed, self.visible, self.opts = tmuxlink.pane_view(*self.watch)
             if not self.visible:                         # out of sight: no work at all
                 return
             self.on_tick()
@@ -525,9 +546,16 @@ class TableApp:
                 if time.monotonic() - getattr(self, "msg_at", 0) > 6:   # messages stay ~6 s
                     self.msg = ""
             return
+        if kind == "ready":                              # background work answered: read it
+            if self.visible:
+                if self.frozen:
+                    self._dirty = True                   # (read once the menu or question closes)
+                else:
+                    self.reload()
+            return
         if kind == "resize":
-            self.zoomed = tmuxlink.pane_state("")[0]     # zoom / restore resize the pane
-            if not self.busy_changed():
+            if not self.busy_changed():                  # a real change of size (zoom / restore too)
+                self.zoomed = tmuxlink.pane_state("")[0]
                 self.menu = None
             return
         if self.menu:
@@ -716,12 +744,17 @@ def run(app_class):
                 if kind == "tick" and app.master and app.visible and time.monotonic() - last < app.interval:
                     if app.dwell():
                         app.draw()
+                    screen.tick = app.tick_every()          # (the dwell done: back to the slow tick)
                     continue
+                motion = kind == "mouse" and ev[1] & 32 and ev[1] not in (64, 65)
+                before = app.view_state() if motion else None
                 app.dispatch(ev)
                 if kind in ("tick", "wake"):
                     last = time.monotonic()          # after the work: a slow fetch is not repeated at once
                 screen.tick = app.tick_every()
-                if app.visible or kind not in ("tick", "wake"):
+                if motion and app.view_state() == before:
+                    continue                                # the pointer moved, nothing on screen did
+                if app.visible or kind not in ("tick", "wake", "ready"):
                     app.draw()
     except SystemExit as e:
         sys.exit(0 if e.code is None else e.code)

@@ -100,7 +100,7 @@ class Updates(SourcesPane, TableApp):
 
     def selected(self, r):
         if r:
-            tmuxlink.put("@pkg-selected", r["id"])
+            tmuxlink.publish("@pkg-selected", r["id"])
 
     def menu_title(self, r):
         return f"{r['name']} · {r['src']}"

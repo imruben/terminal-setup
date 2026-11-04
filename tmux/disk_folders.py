@@ -129,7 +129,8 @@ class Folders(TableApp):
         for old in self.measures:
             if not old.done and (not old.covers(path) or old.root == path):
                 old.cancel()                          # measuring somewhere you left (or this again)
-        m = Measure(path, self.wake)
+        # (du's progress wakes the pane only while it is in sight: back in sight it redraws anyway)
+        m = Measure(path, lambda: self.visible and self.wake())
         self.measures.insert(0, m)
         return m
 
@@ -147,12 +148,13 @@ class Folders(TableApp):
         self.measures = keep[:8]
 
     def size_of(self, path):
-        """(bytes or None, measure) of a folder from the newest measure that has it."""
+        """(bytes or None, measure) of a folder from the newest measure that has it · None, None
+        when none has it (no measure_for(): a stat per row, 1 ms each on /mnt/c)."""
         for m in self.measures:
             size = m.sizes.get(path)
             if size is not None:
                 return size, m
-        return None, self.measure_for(path)
+        return None, None
 
     # ─── reading ───
     def entries(self, path):
@@ -163,8 +165,10 @@ class Folders(TableApp):
         cached = self.listing.get(path)
         # a file that grows (a download, a log) leaves its folder's mtime as it is: read again
         # every few seconds anyway (not every reload: slow on /mnt/c)
-        if cached and cached[0] == mt and time.monotonic() - cached[1] < RELIST:
+        # kept longer where reading it is slow (System32 on /mnt/c: seconds): 10× what it took
+        if cached and cached[0] == mt and time.monotonic() - cached[1] < max(RELIST, 10 * cached[3]):
             return cached[2]
+        started = time.monotonic()
         out = []
         try:
             with os.scandir(path) as it:
@@ -178,7 +182,7 @@ class Folders(TableApp):
             return None
         if len(self.listing) > 50:
             self.listing.clear()
-        self.listing[path] = (mt, time.monotonic(), out)
+        self.listing[path] = (mt, time.monotonic(), out, time.monotonic() - started)
         return out
 
     def fetch(self):

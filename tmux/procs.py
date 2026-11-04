@@ -13,6 +13,7 @@ import pwd
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 sys.dont_write_bytecode = True
@@ -141,6 +142,14 @@ class Procs(TableApp):
                     for pid, ppid, uid, state, rss, cpu, name, cmd in ps_processes()]
         now = time.monotonic()
         rows, seen = [], {}
+        # the CPU % is the ticks since the previous look: one from long ago (the tab out of sight, a
+        # menu open) would give the average of minutes or hours, and sort by it · then this look is
+        # only a first sample, and another comes half a second later (a "ready" event)
+        stale = now - getattr(self, "_prev_at", float("-inf")) > 3 * self.interval
+        if stale:
+            self.prev = {}
+            threading.Timer(0.5, self.wake).start()
+        self._prev_at = now
         for d in os.listdir("/proc"):
             if not d.isdigit():
                 continue

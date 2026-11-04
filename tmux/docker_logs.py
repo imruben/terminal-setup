@@ -24,7 +24,6 @@
 
 import atexit
 import collections
-import ctypes
 import datetime
 import os
 import re
@@ -80,17 +79,7 @@ SLEEP_AFTER = 5       # seconds out of sight before the live `docker logs -f` is
 STAMP = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) ?")   # docker logs --timestamps
 
 
-try:                                    # looked up here: the child (after fork) only calls it
-    _PRCTL = ctypes.CDLL(None, use_errno=True).prctl
-except (OSError, AttributeError):       # macOS: no prctl
-    _PRCTL = None
-
-
-def die_with_parent():
-    """Runs in the child before exec: the kernel ends `docker logs -f` when this pane's program
-    goes, however it goes (pane closed, tab rebuilt, killed) · no orphans following logs forever."""
-    if _PRCTL:
-        _PRCTL(1, 15)                                            # PR_SET_PDEATHSIG, SIGTERM
+from tmuxlink import die_with_parent    # (docker logs -f ends with this pane's program)
 
 
 def stamp_key(ts):
@@ -395,7 +384,8 @@ class Logs(Viewer):
                 self.rebuild()
 
     def wake(self):
-        os.kill(os.getpid(), signal.SIGWINCH)
+        """From the reading threads: an event of its own for the loop (see viewer.run)."""
+        self.screen.poke(b"r")
 
     # ─── what to show ───
     def filtering(self):
@@ -448,7 +438,11 @@ class Logs(Viewer):
             self.pending = False
             self.rebuild()
         elif self.dirty and self.following:
-            self.rebuild()
+            # filtering a whole log (100k lines: ~80 ms) at most once a second; the live tail
+            # (a few hundred lines, ~5 ms) on every tick
+            if not self.filtering() or time.monotonic() - getattr(self, "_rebuilt_at", 0) >= 1.0:
+                self._rebuilt_at = time.monotonic()
+                self.rebuild()
 
     def switch(self, n):
         self.tab = n % len(BASE_TABS)
@@ -460,7 +454,9 @@ class Logs(Viewer):
     def draw(self):
         width = self.screen.size()[1]
         self.clear_span = None                       # status() sets it again when the ✕ is drawn
-        if (not self.menu and self.dirty and self.following) or width != getattr(self, "_built_w", None):
+        # new lines are rebuilt on the tick (every interval), not on every event: with a filter on a
+        # long log a rebuild takes tens of ms, and pointer moves come dozens a second
+        if width != getattr(self, "_built_w", None):
             self._built_w = width
             self.rebuild()
         # tab labels carry their counts once the whole log has been read

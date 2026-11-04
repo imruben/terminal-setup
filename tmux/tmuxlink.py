@@ -4,7 +4,9 @@
 #  focusing a pane by its @label (switching tab if needed).
 # ═══════════════════════════════════════════════════════════════
 
+import ctypes
 import os
+import signal
 import re
 import shutil
 import subprocess
@@ -48,6 +50,20 @@ def put(option, value):
         tmux("set", "-g", option, arg(value))
 
 
+def publish(option, value):
+    """put() for a master's selection, and in the same tmux call a wake (SIGUSR1) for the other
+    panes of its tab: the detail panes follow at once instead of asking tmux every few tenths
+    of a second."""
+    pane = os.environ.get("TMUX_PANE", "")
+    if not pane:
+        return put(option, value)
+    wake = f"kill -USR1 #{{P:#{{?#{{==:#{{pane_id}},{pane}}},,#{{@wake}} }}}} 2>/dev/null; :"
+    if value is None or value == "":
+        tmux("set", "-gu", option, ";", "run-shell", "-b", "-t", pane, wake)
+    else:
+        tmux("set", "-g", option, arg(value), ";", "run-shell", "-b", "-t", pane, wake)
+
+
 def focus(label):
     """Select the pane whose @label is `label` in this session, switching tab if needed."""
     out = tmux("list-panes", "-s", "-F", "#{pane_id}\t#{window_id}\t#{@label}").stdout
@@ -81,8 +97,9 @@ def pointer_here(force=False):
     now = time.monotonic()
     if (force or now - _noted >= 0.25) and my_label():
         _noted = now
-        if get("@pointer") != my_label():
-            put("@pointer", my_label())
+        # one tmux call, the comparison inside it (not a get and then a put: two forks per row)
+        label = my_label().replace("'", "")
+        tmux("if", "-F", f"#{{!=:#{{@pointer}},{label}}}", f"set -g @pointer '{label}'")
 
 
 def pointer_is_here():
@@ -185,3 +202,35 @@ def session_for(path):
     if res.returncode == 0 and os.path.realpath(res.stdout.strip() or "/") != os.path.realpath(path):
         name = clean(f"{os.path.basename(os.path.dirname(path)) or 'root'}-{os.path.basename(path)}")
     return name
+
+
+try:                                    # looked up here: the child (after fork) only calls it
+    _PRCTL = ctypes.CDLL(None, use_errno=True).prctl
+except (OSError, AttributeError):       # macOS: no prctl
+    _PRCTL = None
+
+
+def die_with_parent():
+    """preexec_fn for a long-running child (docker logs -f, docker stats): the kernel ends it when
+    the thread that started it goes, however this pane's program goes (pane closed, tab rebuilt,
+    killed) · start it from a thread that lives as long as the program."""
+    if _PRCTL:
+        _PRCTL(1, 15)                                            # PR_SET_PDEATHSIG, SIGTERM
+
+
+def run_group(argv, timeout, **kw):
+    """subprocess.run(argv, capture_output=True, text=True, …) in a process group of its own, and on
+    timeout the whole group is killed, not only argv: a git fetch's ssh, an ssh's ProxyCommand would
+    stay running otherwise · raises subprocess.TimeoutExpired like run()."""
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            start_new_session=True, **kw)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            proc.kill()
+        proc.communicate()
+        raise
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)

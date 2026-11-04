@@ -14,11 +14,15 @@ import fnmatch
 import getpass
 import glob
 import os
+import sys
 import re
 import shlex
 import socket
 import subprocess
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))     # also when run as a command
+import tmuxlink  # noqa: E402  (run_group: timeouts end the whole process group)
 
 HOME = os.path.expanduser("~")
 SSH_DIR = os.path.join(HOME, ".ssh")
@@ -48,8 +52,7 @@ def ssh_env():
 def run(argv, timeout=10, env=None):
     """(returncode, stdout, stderr) · never a terminal: nothing can ask for a password here."""
     try:
-        res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
-                             env=env or ssh_env(), start_new_session=True, errors="replace")
+        res = tmuxlink.run_group(argv, timeout, stdin=subprocess.DEVNULL, env=env or ssh_env(), errors="replace")
         return res.returncode, res.stdout, res.stderr
     except subprocess.TimeoutExpired:
         return 124, "", "no answer"
@@ -61,10 +64,12 @@ def run(argv, timeout=10, env=None):
 def config_stamp():
     """Changes when ~/.ssh/config or a file it Includes changes."""
     blocks()
-    return _blocks_cache[0]
+    return _blocks_cache[0][0]
 
 
-_blocks_cache = [None, None]
+# (stamp, blocks) as one tuple, replaced whole: the ssh -G threads read it while another thread may
+# be writing it, and two separate stores could pair a new stamp with the old blocks
+_blocks_cache = [(None, None)]
 
 
 def blocks():
@@ -106,10 +111,11 @@ def blocks():
                         read(p, depth + 1, inside)
         cur["end"] = len(lines)
 
-    if _blocks_cache[0] is not None and _blocks_cache[0] == _restat(_blocks_cache[0]):
-        return _blocks_cache[1]
+    cached_stamp, cached = _blocks_cache[0]
+    if cached_stamp is not None and cached_stamp == _restat(cached_stamp):
+        return cached
     read(CONFIG, 0)
-    _blocks_cache[0], _blocks_cache[1] = tuple(stamp) or ((CONFIG, 0),), out
+    _blocks_cache[0] = (tuple(stamp) or ((CONFIG, 0),), out)
     return out
 
 

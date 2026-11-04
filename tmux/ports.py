@@ -17,6 +17,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 sys.dont_write_bytecode = True
@@ -30,15 +31,31 @@ ICON_WEB, ICON_COPY, ICON_STOP, ICON_KILL, ICON_PROC = ("\U000F059F", "\U000F018
 ICON_DOCKER = "\U000F0868"
 
 
-_docker = [0.0, {}]
+_docker = [float("-inf"), {}, False]       # when read, the answer, a read running
 
 
-def docker_ports():
+def docker_ports(on_new=None):
     """{(proto, host port): [(host ip, container name)]} of the published ports (they belong
-    to docker-proxy: root, or Docker Desktop's backend) · kept 10 s, and a Docker that does
-    not answer within 2 s (starting, hung) counts as no containers."""
-    if time.monotonic() - _docker[0] < 10:
-        return _docker[1]
+    to docker-proxy: root, or Docker Desktop's backend) · kept 10 s, read in a thread (docker
+    ps takes ~0.1 s, 2 s with a slow daemon: the pane never waits for it), so this returns what
+    is known now and on_new() runs when a fresh answer differs."""
+    if time.monotonic() - _docker[0] >= 10 and not _docker[2]:
+        _docker[2] = True
+
+        def work():
+            try:
+                found = _read_docker_ports()
+                changed = found != _docker[1]
+                _docker[0], _docker[1] = time.monotonic(), found
+            finally:
+                _docker[2] = False
+            if changed and on_new:
+                on_new()
+        threading.Thread(target=work, daemon=True).start()
+    return _docker[1]
+
+
+def _read_docker_ports():
     try:
         out = subprocess.run(["docker", "ps", "--format", "{{.Names}}|{{.Ports}}"], capture_output=True,
                              text=True, timeout=2, stdin=subprocess.DEVNULL).stdout
@@ -51,7 +68,6 @@ def docker_ports():
         for ip, a, b, proto in re.findall(r"(\[[^\]]*\]|[\d.]*):(\d+)(?:-(\d+))?->[\d-]+/(\w+)", ports):
             for port in range(int(a), int(b or a) + 1):
                 found.setdefault((proto, port), []).append((ip.strip("[]"), name))
-    _docker[0], _docker[1] = time.monotonic(), found
     return found
 
 
@@ -169,7 +185,7 @@ class Ports(TableApp):
                Column("name", "PROCESS")]
 
     def fetch(self):
-        dock = docker_ports()
+        dock = docker_ports(self.wake)
         rows, seen = [], set()
         for proto, local, pid, name in sockets():
             addr, _, port = local.rpartition(":")

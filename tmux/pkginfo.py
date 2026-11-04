@@ -30,7 +30,7 @@ class PkgInfo(BackgroundViewer):
     title = "Package"
     option = "@pkg-selected"
     tabs = ["Info", "Files", "Depends"]
-    interval = 0.3
+    interval = 1.0                # (the master wakes it when the selection changes: tmuxlink.publish)
     refresh_every = KEEP          # BackgroundViewer keeps each answer this long
     empty = "highlight a package in Packages, Search or Updates"
     watch = ("@pkgs-changed", "@pkgs-notes")

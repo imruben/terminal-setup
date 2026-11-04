@@ -118,7 +118,6 @@ my_ip() {
   if (( LINUX )); then ip -o -4 addr show "$IFACE" 2>/dev/null | awk '{print $4; exit}'
   else ipconfig getifaddr "$IFACE" 2>/dev/null; fi
 }
-ping_once() { if (( LINUX )); then ping -c1 -W1 -n 1.1.1.1; else ping -c1 -t1 -n 1.1.1.1; fi 2>/dev/null; }
 
 # bar <percent> <width>
 bar() {
@@ -166,7 +165,9 @@ now_ms; prev_t=$REPLY
 down=() upl=()
 # cursor hidden, and no autowrap: a line too long for the pane is cut instead of
 # wrapping onto the next row (which would push the header out of the pane)
-printf '\e[?25l\e[?7l'; trap 'printf "\e[?25h\e[?7h"; [[ -n $TMUX_PANE ]] && tmux set -pu -t "$TMUX_PANE" @wake 2>/dev/null; exit' INT TERM EXIT
+# (INT / TERM only exit: the EXIT trap then cleans up, once)
+printf '\e[?25l\e[?7l'; trap 'printf "\e[?25h\e[?7h"; [[ -n $TMUX_PANE ]] && tmux set -pu -t "$TMUX_PANE" @wake 2>/dev/null' EXIT
+trap 'exit' INT TERM
 trap ':' WINCH                 # a resize (zoom / restore) redraws right away
 trap ':' USR1                  # back in sight (tmux.conf hooks): look again right away
 [[ -n $TMUX_PANE ]] && tmux set -p -t "$TMUX_PANE" @wake $$
@@ -216,7 +217,12 @@ while :; do
   line "CPU" "$cpu" ""
   used_of $(( (mt - ma) * 1024 )) $(( mt * 1024 )); line "RAM" $(( (mt - ma) * 100 / mt )) "$REPLY"
   if (( st > 0 )); then used_of $(( (st - sf) * 1024 )) $(( st * 1024 )); line "Swap" $(( (st - sf) * 100 / st )) "$REPLY"; fi
-  if [[ -n $NVSMI ]] && IFS=', ' read -r gu gm gt gtemp gpow < <("$NVSMI" --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits 2>/dev/null | head -1) && [[ $gu =~ ^[0-9]+$ && $gm =~ ^[0-9]+$ && $gt =~ ^[0-9]+$ ]]; then     # [N/A] (no memory data): no GPU line
+  # the GPU and the ping every third round (6 s): nvidia-smi takes 30-55 ms on WSL, the ping waits
+  # on the network · the last answer is shown in between (read takes the first line: no head)
+  if [[ -n $NVSMI ]] && (( round % 3 == 1 )); then
+    gpu_raw=""; read -r gpu_raw < <("$NVSMI" --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits 2>/dev/null)
+  fi
+  if [[ -n ${gpu_raw:-} ]] && IFS=', ' read -r gu gm gt gtemp gpow <<< "$gpu_raw" && [[ $gu =~ ^[0-9]+$ && $gm =~ ^[0-9]+$ && $gt =~ ^[0-9]+$ ]]; then     # [N/A] (no memory data): no GPU line
     [[ $gtemp =~ ^[0-9.]+$ ]] || gtemp=""; [[ $gpow =~ ^[0-9.]+$ ]] || gpow=""
     used_of $(( gm * 1048576 )) $(( gt * 1048576 )); gpu_txt=$REPLY
     (( cols >= 50 )) && [[ -n $gtemp ]] && gpu_txt+=" · ${gtemp%.*}°C"
@@ -236,7 +242,11 @@ while :; do
     "$C_DOWN" "$dtxt" "$dspark" "$X" "$C_UP" "$utxt" "$uspark" "$X"
   out+=("$net")
   # Web: are we online, and how far is the internet
-  if ping_out=$(ping_once) && [[ $ping_out =~ time[=\<]([0-9]+) ]]; then
+  if (( round % 3 == 1 )); then           # (ping itself in the $(…): one fork, not a function's two)
+    if (( LINUX )); then ping_out=$(ping -c1 -W1 -n 1.1.1.1 2>/dev/null) || ping_out=""
+    else ping_out=$(ping -c1 -t1 -n 1.1.1.1 2>/dev/null) || ping_out=""; fi
+  fi
+  if [[ $ping_out =~ time[=\<]([0-9]+) ]]; then
     lat=${BASH_REMATCH[1]}
     lc=$C_OK; (( lat >= 100 )) && lc=$C_WARN; (( lat >= 300 )) && lc=$C_BAD
     # as much as fits: a wrapped line would push the header out of the pane

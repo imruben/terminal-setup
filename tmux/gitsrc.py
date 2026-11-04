@@ -17,10 +17,14 @@
 
 import glob
 import os
+import sys
 import re
 import subprocess
 import time
 import urllib.parse
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))     # also when run as a command
+import tmuxlink  # noqa: E402  (run_group: timeouts end the whole process group)
 
 HOME = os.path.expanduser("~")
 ROOTS_FILE = os.path.join(HOME, ".tmux", "git-roots")
@@ -183,8 +187,8 @@ def find_repos(roots, saved=True):
 def git(repo, *args, timeout=15):
     try:
         # core.fsmonitor is a command in the repo's own config: a repo you only unpacked would run it
-        res = subprocess.run(["git", "-c", "core.fsmonitor=false", "-C", repo, *args], capture_output=True, text=True, env=GIT_ENV,
-                             timeout=timeout, stdin=subprocess.DEVNULL, errors="replace", start_new_session=True)
+        res = tmuxlink.run_group(["git", "-c", "core.fsmonitor=false", "-C", repo, *args], timeout, env=GIT_ENV,
+                                 stdin=subprocess.DEVNULL, errors="replace")
         return res
     except (subprocess.TimeoutExpired, OSError):
         return None
@@ -230,6 +234,7 @@ def in_progress(gdir):
     return ""
 
 
+_LAST = {}                  # repo → (HEAD's commit id, its time · subject · author)
 _STASH_OK = [True]          # git < 2.35 has no --show-stash: asked without it from then on
 
 
@@ -290,7 +295,16 @@ def status(repo):
         except OSError:
             pass
     st["fetched"] = max(stamps) if stamps else None
-    last = git_out(repo, "log", "-1", "--no-show-signature", "--format=%ct%x1f%s%x1f%an", "--").strip().split("\x1f")
+    # the last commit's time, subject and author: asked only when HEAD's commit changed (status
+    # gave its id): every repo is looked at every few seconds, and this was half the git calls
+    hit = _LAST.get(repo)
+    if hit and hit[0] == st["oid"] and st["oid"]:
+        last = hit[1]
+    else:
+        last = git_out(repo, "log", "-1", "--no-show-signature", "--format=%ct%x1f%s%x1f%an", "--").strip().split("\x1f")
+        if len(_LAST) > 500:
+            _LAST.clear()
+        _LAST[repo] = (st["oid"], last)
     st["last"] = int(last[0]) if last and last[0].isdigit() else None
     st["subject"] = last[1][:200] if len(last) > 1 else ""      # a message with no blank line is all subject
     st["author"] = last[2] if len(last) > 2 else ""

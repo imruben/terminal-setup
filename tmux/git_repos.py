@@ -128,7 +128,11 @@ class Repos(TableApp):
 
     def scan(self):
         roots, saved = gitsrc.read_roots()
-        return gitsrc.find_repos(roots, saved)
+        started = time.monotonic()
+        try:
+            return gitsrc.find_repos(roots, saved)
+        finally:
+            self._scan_cost = time.monotonic() - started
 
     def statuses(self, repos):
         paths = list(repos)
@@ -149,7 +153,8 @@ class Repos(TableApp):
         if stamp != self.roots_seen:              # the list of folders changed: look again now
             self.roots_seen = stamp
             self.bg.forget(("scanning",))
-        repos = self.bg.get(("scanning",), self.scan, 60) or {}
+        # looked for again every minute, or 30× what the last walk took (a root on /mnt/c: ~9 s)
+        repos = self.bg.get(("scanning",), self.scan, max(60, 30 * getattr(self, "_scan_cost", 0))) or {}
         if repos.keys() != self.repos.keys():      # repos came or went: read them all at once
             self.bg.forget(("status",))
             self.bg.forget(("settings",))
@@ -276,7 +281,7 @@ class Repos(TableApp):
 
     # ─── talking to the Repo pane ───
     def selected(self, r):
-        tmuxlink.put("@git-selected", r["path"] if r else "")
+        tmuxlink.publish("@git-selected", r["path"] if r else "")
 
     # ─── menu ───
     def menu_items(self, r):
@@ -348,9 +353,8 @@ class Repos(TableApp):
             try:
                 with self.net_slots:
                     for args in steps:
-                        res = subprocess.run(["git", "-C", r["path"], *args], capture_output=True, text=True,
-                                             env=NET_ENV, timeout=120, stdin=subprocess.DEVNULL,
-                                             start_new_session=True, errors="replace")
+                        res = tmuxlink.run_group(["git", "-C", r["path"], *args], 120, env=NET_ENV,
+                                                 stdin=subprocess.DEVNULL, errors="replace")
                         ok, out = res.returncode == 0, (out + "\n" + res.stdout + res.stderr).strip()
                         if not ok:
                             break
