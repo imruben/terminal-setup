@@ -1,0 +1,31 @@
+# A tag vX.Y.Z pushed (make release VERSION=X.Y.Z, then git push origin main vX.Y.Z): its GitHub
+# release, with CHANGELOG.md's section for that version as the text · nothing else is built, the
+# repo itself is what gets installed (git clone / git pull, then ./install.sh).
+name: release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: notes from CHANGELOG.md
+        run: |
+          v=${GITHUB_REF_NAME#v}
+          awk -v v="$v" '
+            index($0, "## [" v "]") == 1 { on = 1; next }
+            on && (/^## \[/ || /^---$/ || /^\[[^]]+\]: /) { exit }
+            on { print }' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "CHANGELOG.md has no section for $v"; exit 1; }
+          cat notes.md
+      - name: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "terminal-setup ${GITHUB_REF_NAME#v}" --notes-file notes.md --verify-tag

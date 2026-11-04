@@ -17,6 +17,13 @@ repo_path() {   # repo_path <repo>: the path your files use for it
   case $1 in *[[:space:]]*) printf '%s' "$REPO_LINK" ;; *) printf '%s' "$1" ;; esac
 }
 
+# repo_version <repo>: which version this is, from git (CHANGELOG.md says what each one brought) ·
+# v1.0.0 a release · v1.0.0-3-gabc1234 three commits after it · -dirty with changes not committed
+# yet · abc1234 no release yet · unknown without git (a downloaded zip)
+repo_version() {
+  git -C "$1" describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || printf 'unknown'
+}
+
 # logs of long steps (apt-get, the tmux build), shown only when they fail
 LOG_DIR=${XDG_CACHE_HOME:-$HOME/.cache}/terminal-setup
 

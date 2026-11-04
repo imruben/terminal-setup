@@ -1,0 +1,13 @@
+# Proposes a pull request when an action used by the workflows has a new version: it updates the
+# pinned commit and the version in its comment (.github/workflows/ci.yml), grouped in one PR a week.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "CI:"

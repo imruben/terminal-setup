@@ -199,11 +199,15 @@ class TableApp:
         words = [] if self.remote_query else self.query.lower().split()
 
         keys = self.search_keys
+        texts = {}                  # a row's text, made once per apply (not once per word typed)
 
         def text(r):
-            items = ((k, r.get(k)) for k in keys) if keys else r.items()
-            return " ".join(str(v) for k, v in items if k != "id" and isinstance(v, (str, int, float))
-                            and not isinstance(v, bool)).lower()
+            t = texts.get(id(r))
+            if t is None:
+                items = ((k, r.get(k)) for k in keys) if keys else r.items()
+                t = texts[id(r)] = " ".join(str(v) for k, v in items if k != "id" and isinstance(v, (str, int, float))
+                                            and not isinstance(v, bool)).lower()
+            return t
 
         def match(r, w):            # "pid=123" (sent by another pane) is that field exactly
             key, eq, value = w.partition("=")

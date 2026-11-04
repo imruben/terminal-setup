@@ -48,10 +48,11 @@ check_marks() {
     || die "$(tilde "$1") has the line \"$MARK_BEGIN\" but no \"$MARK_END\" after it: put it back (or take both out), then run this again"
 }
 block_in()    { awk -v b="$MARK_BEGIN" -v e="$MARK_END" 'index($0,b)==1{on=1} on{print} index($0,e)==1{on=0}' "$1"; }
-# the file without the block, and without the blank lines left at its end
+# the file without the block, and without the blank lines left at its end · the blank line just
+# before the block goes with it (add_block put it there), so your lines come back as they were
 without_block() {
   awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
-    index($0,b)==1 { on=1; next }  on { if (index($0,e)==1) on=0; next }
+    index($0,b)==1 { sub(/[^\n]*\n$/, "", blank); on=1; next }  on { if (index($0,e)==1) on=0; next }
     /^[ \t]*$/ { blank = blank $0 "\n"; next }  { printf "%s%s\n", blank, $0; blank="" }' "$1"
 }
 

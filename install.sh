@@ -86,7 +86,7 @@ fi
 
 # ─── plan ───
 detect_platform
-printf '\n%sterminal-setup%s · %s · %s\n' "$B" "$R" "$OS_NAME" "$ARCH"
+printf '\n%sterminal-setup %s%s · %s · %s\n' "$B" "$(repo_version "$REPO")" "$R" "$OS_NAME" "$ARCH"
 printf '%s%s%s\n' "$D" "repo: $(tilde "$REPO")" "$R"
 [ "$DRY_RUN" = 1 ] && printf '%s(dry run: nothing is changed)%s\n' "$YELLOW" "$R"
 

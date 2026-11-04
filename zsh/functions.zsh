@@ -521,7 +521,8 @@ _terminal() {
     local -a cmds=(
       'open:open or create a session' 'list:list sessions' 'rename:rename a session'
       'kill:kill a session' 'kill-all:kill every session (the system monitor stays)' 'guide:searchable tmux guide'
-      'system:the system monitor' 'files:every file the install put here, and what it is for' 'help:show help')
+      'system:the system monitor' 'files:every file the install put here, and what it is for'
+      'version:which version of terminal-setup this is' 'help:show help')
     _describe command cmds
   elif (( CURRENT == 3 )) && [[ $words[2] == (open|o|kill|k|rename|mv) ]]; then
     local -a sessions=(${(f)"$($TERMINAL_SETUP/tmux/terminal.zsh _names)"})

@@ -181,6 +181,7 @@ terminal kill-all|Close every session but the system monitor · asks first, and 
 terminal start name|New terminals open that session (created in its folder if closed) · terminal start system: the monitor|@shell:$TERMINAL_SETUP/tmux/terminal.zsh start; read -sk "?press any key"
 terminal guide|This guide|
 terminal files|Every file the install put on this machine, and what it is for|@shell:bash $TERMINAL_SETUP/install/files.sh | less -R
+terminal version|Which version of terminal-setup this is · CHANGELOG.md says what each one brought|@shell:$TERMINAL_SETUP/tmux/terminal.zsh version; read -sk "?press any key"
 terminal help|Every command|@shell:$TERMINAL_SETUP/tmux/terminal.zsh help; read -sk "?press any key"
 @Shell|functions and aliases of zsh/functions.zsh and zsh/aliases.zsh
 update|Update everything: apt, snap, brew, uv, pnpm, Composer, Node LTS (fnm), tldr pages, plugins|
@@ -221,8 +222,15 @@ render() {
 
 # ─────────────── Viewer ───────────────
 # tmux/guide.py shows every entry in one list: hover, click to run, wheel
-# scrolls, type to search. The fzf search below is only the fallback without python3.
-[[ $1 != search ]] && (( $+commands[python3] )) && exec python3 -I $TERMINAL_SETUP/tmux/guide.py
+# scrolls, type to search. The fzf search below is the fallback without python3, or when the
+# viewer fails (a python3 too old for it): a guide that opens and closes at once helps no one.
+if [[ $1 != search ]] && (( $+commands[python3] )); then
+  err=$(mktemp 2>/dev/null || print /dev/null)
+  python3 -I $TERMINAL_SETUP/tmux/guide.py 2>$err && { rm -f $err; exit; }
+  print -r -- "${Y}the guide viewer failed (${D}$(tail -1 $err 2>/dev/null)${X}${Y}): the plain list instead${X}"
+  [[ $err != /dev/null ]] && rm -f $err
+  sleep 1
+fi
 
 
 # ─────────────── Search (fzf) ───────────────

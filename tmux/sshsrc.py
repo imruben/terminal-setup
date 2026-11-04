@@ -383,7 +383,7 @@ def parse_ssh(cmd):
             i += 1
         if not dest:
             return None
-    if not dest or any(c in dest for c in "$`(){}") or dest.startswith("-"):
+    if not dest or any(c in dest for c in "$`(){}'\"") or dest.startswith("-"):   # (quotes: a line shlex could not split)
         return None
     return {"prog": prog, "dest": dest, "opts": opts, "flags": flags, "rest": rest, "fwd": fwd}
 

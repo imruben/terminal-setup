@@ -14,7 +14,7 @@ import datetime
 import json
 import re
 
-from tui import ANSI, BLUE, DIM, GREEN, RED, RESET, SUB, TEXT, YELLOW, bg, fg
+from tui import ANSI, BLUE, DIM, GREEN, RED, RESET, SGR_CODE, SUB, TEXT, YELLOW, bg, fg
 
 BADGE = {"error": bg("#f38ba8") + fg("#11111b") + "ERR ",
          "warning": bg("#f9e2af") + fg("#11111b") + "WARN",
@@ -165,45 +165,67 @@ def parse(line, stamp=None):
     return lvl, (f"{badge(lvl)} " + (f"{DIM}{short_time(stamp or when)}{RESET} " if stamp or when else "") + f"{colour}{rest}{RESET}")
 
 
+MARK = bg("#f9e2af") + fg("#11111b")
+SGR_RESETS = ("\x1b[0m", "\x1b[m")
+
+
 def mark(line, terms):
-    """Highlight every term (case-insensitive) in a coloured line, keeping its colours."""
+    """Highlight every term (case-insensitive) in a coloured line, keeping its colours (and links) ·
+    the text between codes is cut at the matches a slice at a time: a search lays out thousands of lines."""
     if not terms:
         return line
     plain = ANSI.sub("", line)
     # lower-cased one character at a time: some grow ("İ" → "i̇"), and positions must match plain
-    low = "".join(c if len(c.lower()) != 1 else c.lower() for c in plain)
+    low = plain.lower() if plain.isascii() else "".join(c if len(c.lower()) != 1 else c.lower() for c in plain)
     spans = []
     for t in terms:
-        start = low.find(t)
-        while t and start >= 0:
+        start = low.find(t) if t else -1
+        while start >= 0:
             spans.append((start, start + len(t)))
             start = low.find(t, start + len(t))
     if not spans:
         return line
-    hit = [False] * len(plain)
-    for a, b in spans:
-        for i in range(a, b):
-            hit[i] = True
-    out, vis, i, last_sgr, on = [], 0, 0, "", False
-    MARK = bg("#f9e2af") + fg("#11111b")
-    while i < len(line):
-        m = ANSI.match(line, i)
-        if m:
-            last_sgr = m.group()
-            if not on:
-                out.append(last_sgr)
-            i = m.end()
-            continue
-        want = hit[vis] if vis < len(hit) else False
-        if want and not on:
-            out.append(MARK)
-            on = True
-        elif not want and on:
-            out.append(RESET + last_sgr)
-            on = False
-        out.append(line[i])
-        vis += 1
-        i += 1
+    spans.sort()
+    merged = [list(spans[0])]
+    for a, b in spans[1:]:
+        if a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    out, active, on, vis, pos, k = [], [], False, 0, 0, 0
+    for m in [*ANSI.finditer(line), None]:
+        end = m.start() if m else len(line)
+        i, n = 0, end - pos
+        while i < n:
+            at = vis + i
+            while k < len(merged) and merged[k][1] <= at:
+                k += 1
+            if k < len(merged) and merged[k][0] <= at:          # inside a match
+                stop = min(n, merged[k][1] - vis)
+                if not on:
+                    out.append(MARK)
+                    on = True
+            else:
+                stop = min(n, merged[k][0] - vis) if k < len(merged) else n
+                if on:                                           # out of it: the line's own colours again
+                    out.append(RESET + "".join(active))
+                    on = False
+            out.append(line[pos + i:pos + stop])
+            i = stop
+        vis += n
+        if m is None:
+            break
+        g = m.group()
+        if SGR_CODE.fullmatch(g):
+            if g in SGR_RESETS:
+                active = []
+            else:
+                active.append(g)
+            if not on:                                           # inside a match its colours stay
+                out.append(g)
+        else:
+            out.append(g)                                        # links and the rest: kept
+        pos = m.end()
     if on:
         out.append(RESET)
     return "".join(out)

@@ -30,6 +30,7 @@ optional() {
        /home/linuxbrew/.linuxbrew/bin/brew 2>/dev/null)" ]; }; then ok "$1 ${D}(optional: $2)${R}"; else info "${D}– $1 not installed (optional: $2)${R}"; fi
 }
 
+printf '\n  %sterminal-setup %s%s %s· %s%s\n' "$B" "$(repo_version "$REPO")" "$R" "$D" "$(tilde "$REPO")" "$R"
 printf '\n  %sTools%s\n' "$B" "$R"
 need zsh
 need tmux "$TMUX_MIN" "tmux -V"

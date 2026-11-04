@@ -247,7 +247,7 @@ class Viewer:
 
     def toggle_zoom(self):
         tmuxlink.toggle_zoom()
-        self.zoomed = not self.zoomed
+        self.zoomed = tmuxlink.pane_state("")[0]       # what tmux did (a pane alone in its tab cannot zoom)
 
     # ─── input ───
     def scroll(self, delta):

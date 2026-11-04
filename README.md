@@ -194,7 +194,20 @@ Lo mismo con **`make`** (si no lo tienes: `sudo apt install make`; `./install.sh
 | `doctor` | comprobar la instalación |
 | `files` | todos los archivos que ha puesto la instalación y para qué sirve cada uno (también: `terminal files`) |
 | `monitor` | reconstruir el monitor del sistema |
-| `check` | sintaxis de todos los scripts (para cambios en el repo) |
+| `check` | sintaxis de todos los scripts y shellcheck (para cambios en el repo) |
+| `test` | tests unitarios del código del monitor: dibujo, teclas, logs, docker, git, ssh (un segundo, no toca nada) |
+| `smoke` | abre cada panel del monitor en un tmux privado, le manda teclas y mira que no falle (~1 min) |
+| `test-install` | la instalación entera en Ubuntu 24.04 y 26.04 limpios, con Docker (`TAGS="24.04"` para una) |
+| `bench` | la CPU de cada panel del monitor, pestaña a pestaña (`SECS=30` por pestaña) |
+| `version` | qué versión es (también `terminal version`) |
+| `release` | etiquetar una versión: `make release VERSION=1.2.0` (ver [CHANGELOG.md](CHANGELOG.md)) |
+
+Cada `git push` pasa por **GitHub Actions** (`.github/workflows/ci.yml`):
+- `check`, pyflakes y `test` con Python 3.9 y 3.13;
+- la instalación entera en Ubuntu 24.04 y 26.04;
+- `test` + `smoke` en macOS (de momento solo informa: nunca se ha probado en un Mac de verdad).
+
+Las acciones están fijadas por commit, no por etiqueta, y Dependabot propone las nuevas cada semana. Al subir una etiqueta `vX.Y.Z`, `release.yml` publica la release con su texto del CHANGELOG.
 
 **Qué se instala**
 
@@ -269,6 +282,15 @@ git pull          # lo último del repo
                   # paquetes del sistema y plugins a su última versión
 ```
 
+**Versiones.**
+- **Saber cuál tienes:** `terminal version`, `make version` o la primera línea de `./install.sh` y de `make doctor`. Puede salir:
+  - `v1.0.0`: exactamente esa versión;
+  - `v1.0.0-3-gabc1234`: 3 commits después;
+  - `-dirty` al final: hay cambios sin commit.
+- **Qué trae cada una:** [CHANGELOG.md](CHANGELOG.md).
+- **Quedarte en una concreta** (en otra máquina, por ejemplo): `git checkout v1.0.0` y `./install.sh`. Para volver a lo último: `git checkout main && git pull`.
+- **Publicar una:** `make release VERSION=X.Y.Z`. Los pasos completos están al final del CHANGELOG.
+
 ---
 
 ## Desinstalar
@@ -313,6 +335,14 @@ terminal-setup/
 │   ├── system.sh                   construye el monitor (sesión `system`)
 │   ├── *.py                        los paneles del monitor
 │   └── system/                     scripts del monitor (info, recursos, btop, abrir URLs…)
+├── tests/
+│   ├── unit/                       tests unitarios del monitor (make test)
+│   ├── shell/lib.sh                las funciones del instalador (make test)
+│   ├── smoke/panes.sh              cada panel en un tmux privado (make smoke)
+│   ├── install/                    la instalación en contenedores Ubuntu (make test-install)
+│   └── bench/cpu.sh                CPU del monitor (make bench)
+├── .github/                        CI en cada push, release al subir una etiqueta, Dependabot
+├── CHANGELOG.md                    qué trae cada versión, y cómo publicar una
 ├── config/
 │   ├── starship.toml               el prompt (STARSHIP_CONFIG)
 │   ├── btop/btop.conf              el btop del monitor (copiado a ~/.config/btop si no tienes)

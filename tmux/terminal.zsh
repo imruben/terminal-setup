@@ -338,7 +338,7 @@ rename() {
 help() {
   cat <<EOF
 
-  ${B}${C}▌ terminal${X}  ${D}tmux session manager${X}
+  ${B}${C}▌ terminal${X}  ${D}tmux session manager · terminal-setup $(setup_version)${X}
 
   ${B}COMMANDS${X}
     ${Y}terminal${X}                       session picker
@@ -352,6 +352,7 @@ help() {
     ${Y}terminal start${X} [name|system]   the session new terminals open ${D}(default: the system monitor)${X}
     ${Y}terminal guide${X}                 tmux guide ${D}(same as Ctrl+a ? inside tmux)${X}
     ${Y}terminal files${X}                 every file the install put on this machine, and what it is for
+    ${Y}terminal version${X}               which version of terminal-setup this is ${D}(CHANGELOG.md: what each one brought)${X}
     ${Y}terminal help${X}                  this panel
 
   ${B}SESSIONS${X}  ${D}(${G}●${D} attached · ${M}▶${D} current)${X}
@@ -362,6 +363,11 @@ $(list)
   ${D}Disable auto-start: add ${X}export TERMINAL_NO_AUTOSTART=1${D} to ~/.zshrc, above the terminal-setup line${X}
 
 EOF
+}
+
+# v1.0.0 · v1.0.0-3-gabc1234 (3 commits after it) · -dirty (changes not committed) · as install/lib.sh's repo_version
+setup_version() {
+  git -C $TERMINAL_SETUP describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || print unknown
 }
 
 # ─────────────── Entry point ───────────────
@@ -416,6 +422,7 @@ case "$1" in
                     [[ -f $f ]] && awk -F'\t' -v o="$old" -v n="$new" 'BEGIN { OFS = FS } $1 == o { $1 = n } { print }' "$f" > "$f.tmp" \
                       && mv "$f.tmp" "$f" ;;
   help|h|-h|--help) help ;;
+  version|-v|--version) print -r -- "terminal-setup $(setup_version)" ;;
   # a session closed (any way: Ctrl+a X, its last tab or shell, the session tree…) · not at
   # kill-server or when tmux itself is ended: no hook runs then, and the descriptions come back
   _closed)          [[ -n $2 ]] && forget_description "$2" ;;

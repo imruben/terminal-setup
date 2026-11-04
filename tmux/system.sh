@@ -78,18 +78,19 @@ build() {
   repos=$(tmux new-window -d -t "$S:" -n git -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/git_repos.py")
   repo=$(tmux split-window -v -l 58% -t "$repos" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/git_repo.py")
 
-  local pair
+  # the panes' labels and the tabs' icons: one tmux command list (27 tmux runs before)
+  local pair w cmds=()
   for pair in "$info=Info" "$res=Resources" "$btop=btop" "$procs=Processes" "$ports=Ports" \
               "$folders=Folders" "$disks=Disks" "$clean=Cleanup" \
               "$pkgs=Packages" "$updates=Updates" "$search=Search" "$pkg=Package" \
               "$hosts=Hosts" "$hostd=Host" "$keys=Keys" \
               "$cont=Containers" "$det=Container" "$logs=Logs" "$repos=Repos" "$repo=Repo"; do
-    tmux set -p -t "${pair%%=*}" @label "${pair#*=}"
+    cmds+=(set -p -t "${pair%%=*}" @label "${pair#*=}" \;)
   done
-  local w
   for w in info:󰋽 monitor:󰐰 disk:󰋊 packages:󰏗 ssh:󰣀 docker:󰡨 git:󰊢; do
-    tmux set -w -t "$S:${w%%:*}" automatic-rename off \; set -w -t "$S:${w%%:*}" @icon "${w#*:}"
+    cmds+=(set -w -t "$S:${w%%:*}" automatic-rename off \; set -w -t "$S:${w%%:*}" @icon "${w#*:}" \;)
   done
+  tmux "${cmds[@]}"
   # When the Info tab changes size (fullscreen, a client of another size…): keep Resources
   # at its height and give btop the boxes that fit (tmux/system/info-fit.sh)
   tmux resize-pane -t "$res" -y $RES_ROWS \
@@ -116,9 +117,11 @@ build() {
 # repair when that number changes (a pane closed), not on every border dragged · a pane of your
 # own split into a tab is counted on the next look, so it costs one repair, not one per drag
 note_panes() {
-  local w n has
-  tmux list-windows -t "=$S" -F '#{window_id} #{window_panes} #{?#{@icon},1,0}' 2>/dev/null |
-    while read -r w n has; do [[ $has == 1 ]] && tmux set -w -t "$w" @panes "$n"; done
+  local w n has cmds=()
+  while read -r w n has; do
+    [[ $has == 1 ]] && cmds+=(set -w -t "$w" @panes "$n" \;)
+  done < <(tmux list-windows -t "=$S" -F '#{window_id} #{window_panes} #{?#{@icon},1,0}' 2>/dev/null)
+  (( ${#cmds[@]} )) && tmux "${cmds[@]}"
 }
 
 # Every labelled pane must be there (extra tabs of your own are fine); anything missing

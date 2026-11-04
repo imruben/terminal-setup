@@ -81,7 +81,7 @@ def host_ports(ports, web=False):
 
 
 def mem_bytes(text):
-    m = re.match(r"([\d.]+)\s*([KMGT]?i?B)", (text or "").strip())
+    m = re.match(r"([\d.]+)\s*([kKMGT]?i?B)", (text or "").strip())
     if not m:
         return None
     mult = {"B": 1, "KiB": 1024, "kB": 1000, "KB": 1000, "MiB": 1024 ** 2, "MB": 1000 ** 2, "GiB": 1024 ** 3,

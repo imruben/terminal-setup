@@ -89,6 +89,19 @@ def stamp_key(ts):
 ICON_SAVE, ICON_CLOCK = "\U000F0193", "\U000F0954"
 
 
+def passing(items, terms, wanted):
+    """The (number, entry) of items whose level is wanted (None: any) and whose text has every term
+    · one comprehension per case: an all() over a generator per line doubled the time of a search."""
+    if not terms:
+        return [x for x in items if x[1][0] in wanted] if wanted else list(items)
+    if len(terms) == 1:
+        t = terms[0]
+        if wanted:
+            return [x for x in items if t in x[1][2] and x[1][0] in wanted]
+        return [x for x in items if t in x[1][2]]
+    return [x for x in items if (not wanted or x[1][0] in wanted) and all(t in x[1][2] for t in terms)]
+
+
 class Logs(Viewer):
     icon = "\U000F0331"
     title = "Logs"
@@ -103,6 +116,9 @@ class Logs(Viewer):
         self.proc = None
         self.tail = collections.deque(maxlen=TAIL * 4)   # (level, pretty, plain) of the latest lines
         self.full = None                                 # every line, read when a filter needs it
+        self.full_seq = 0                                # lines ever put in full (the oldest go at FULL_MAX)
+        self._pick = None                                # the last search's answer, kept to go on from
+        self._laid = ({}, None)                          # (entry → its wrapped rows, for which terms and width)
         self.loading = False
         self.counts = collections.Counter()
         self.query = ""
@@ -284,6 +300,7 @@ class Logs(Viewer):
                     if len(self.full) == FULL_MAX:       # kept at FULL_MAX lines: the oldest goes
                         self.counts[self.full[0][0]] -= 1
                     self.full.append(e)                  # a new line after the whole log was read
+                    self.full_seq += 1
                     self.counts[e[0]] += 1
                 self.dirty = True
         with self.lock:
@@ -354,6 +371,7 @@ class Logs(Viewer):
                     entries = collections.deque(entries, maxlen=FULL_MAX)
                     counts = collections.Counter(e[0] for e in entries)
                     self.full, self.counts, self.loading, self.dirty = entries, counts, False, True
+                    self.full_seq = len(entries)
             self.wake()
         threading.Thread(target=work, daemon=True).start()
 
@@ -391,27 +409,67 @@ class Logs(Viewer):
     def filtering(self):
         return bool(self.query.strip()) or BASE_TABS[self.tab] != "All" or bool(self.since)
 
+    def pick(self, terms, wanted):
+        """The lines of the whole log that pass the search and the tab, as (number, entry) · worked
+        out from the last answer when it can be: new lines only (they come every second on a busy
+        container), or only the last matches when the search just got longer (typing a word).
+        Filtering 100k lines from scratch takes ~20 ms."""
+        query = (" ".join(terms), wanted)
+        last = self._pick
+        with self.lock:
+            full, seq = self.full, self.full_seq
+            if full is None:
+                return []
+            first = seq - len(full)                      # the number of the oldest line still kept
+            if last and last[1] is full and last[0] == query and seq - last[2] <= len(full):
+                fresh = [(n, full[n - first]) for n in range(last[2], seq)]
+                src, keep = fresh, last[3]
+            elif last and last[1] is full and last[2] == seq and last[0][1] == wanted \
+                    and query[0].startswith(last[0][0]):
+                src, keep = last[3], []                  # a longer search finds a part of what the shorter one did
+            else:
+                src, keep = None, []
+                every = list(full)
+        if src is None:                                  # from scratch
+            src = zip(range(first, first + len(every)), every)
+        ok = passing(src, terms, wanted)
+        picked = keep + ok if keep else ok
+        if picked and picked[0][0] < first:              # lines gone from the front (FULL_MAX)
+            picked = [x for x in picked if x[0] >= first]
+        self._pick = (query, full, seq, picked)
+        return picked
+
     def rebuild(self):
         _, w = self.screen.size()
         terms = self.query.lower().split()
         wanted = SEVERITY[BASE_TABS[self.tab]]
-        with self.lock:
-            if self.filtering():
-                src = list(self.full) if self.full is not None else []
-            else:
-                src = list(self.tail)[-TAIL:]
-            self.dirty = False
         if self.filtering():
-            picked = [e for e in src if (not wanted or e[0] in wanted) and all(t in e[2] for t in terms)]
+            with self.lock:
+                self.dirty = False
+            picked = self.pick(terms, wanted)
             self.matches = len(picked)
-            src = picked[-SHOW_MAX:]
+            src = [e for _, e in picked[-SHOW_MAX:]]
+        else:
+            with self.lock:
+                src = list(self.tail)[-TAIL:]
+                self.dirty = False
         width = max(10, w - 3)
+        # each line is marked and wrapped once for these terms and this width: a rebuild with a few
+        # new lines lays out only those (marking 2000 matches took most of a rebuild's time)
+        laid, how = self._laid
+        if how != (tuple(terms), width):
+            laid = {}
+        now = {}
         self.entries = src
         self.lines, self.src = [], []
         for n, e in enumerate(src):
-            pieces = wrap(mark(e[1], terms), width, indent="      ")
+            pieces = laid.get(e)
+            if pieces is None:
+                pieces = wrap(mark(e[1], terms), width, indent="      ")
+            now[e] = pieces
             self.lines += pieces
             self.src += [n] * len(pieces)
+        self._laid = (now, (tuple(terms), width))
         if self.sel and self.sel[1] >= len(self.lines):
             self.sel = None
         self.clamp()
@@ -438,11 +496,7 @@ class Logs(Viewer):
             self.pending = False
             self.rebuild()
         elif self.dirty and self.following:
-            # filtering a whole log (100k lines: ~80 ms) at most once a second; the live tail
-            # (a few hundred lines, ~5 ms) on every tick
-            if not self.filtering() or time.monotonic() - getattr(self, "_rebuilt_at", 0) >= 1.0:
-                self._rebuilt_at = time.monotonic()
-                self.rebuild()
+            self.rebuild()                           # new lines: only they are filtered and laid out (pick)
 
     def switch(self, n):
         self.tab = n % len(BASE_TABS)
