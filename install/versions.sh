@@ -9,6 +9,7 @@ TMUX_VERSION=3.6a       # built from source where the system's tmux is older
 FZF_MIN=0.48            # `fzf --zsh` (key bindings and completion) appeared in 0.48
 FZF_VERSION=0.67.0
 FASTFETCH_VERSION=2.57.1
+STARSHIP_VERSION=1.27.0  # Ubuntu 24.04 has no starship: official binary
 LAZYGIT_VERSION=0.66.2   # Ubuntu 24.04 has no lazygit: official binary
 YQ_VERSION=4.54.1        # mikefarah/yq: Ubuntu's yq package is another program
 NERD_FONT_VERSION=v3.5.1
@@ -17,7 +18,8 @@ PYTHON_MIN=3.8          # the tmux panels (Python, standard library only)
 
 # sha256 of each download, checked before it is used (install/lib.sh: download): a changed or
 # broken file installs nothing. A version above changes → its sums here too: from the release's
-# checksums file (fzf, lazygit, yq, nerd-fonts publish one) or `sha256sum` of the download.
+# checksums file (fzf, lazygit, yq, nerd-fonts publish one; starship a .sha256 per file) or
+# `sha256sum` of the download.
 SHA_fzf_amd64=4be08018ca37b32518c608741933ea335a406de3558242b60619e98f25be2be1
 SHA_fzf_arm64=7071f48c2ac0f2bc992d6d33cc36fd675a579a98cc976dda699eea07dd5e9c58
 SHA_fastfetch_amd64=3f3961d5a3152ffd8a373776e6a34ed739ca0e83c662853e197ca90fa2db9905
@@ -26,5 +28,7 @@ SHA_lazygit_amd64=158efc9ddfa1241fab5fb3526bb442c8dc6c4b1904d73213b9e4e93e03c520
 SHA_lazygit_arm64=79a3161eeb642f0473e23db6341f7baabd4a5933e921a9c1167c5d5c765c41a4
 SHA_yq_amd64=8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f
 SHA_yq_arm64=189088da0c6429ec5178dfaab1a114805f6cab0b61b165ab236efedf1d57a71b
+SHA_starship_amd64=10c8eb4cb3b761d9bf59ea828444c2dab36c900b7d69a69e08814b286969df89
+SHA_starship_arm64=341f5cbf24699fa0b27ec88965ad25f862ea09e15d35a543fd6ffdff1d2aa00d
 SHA_tmux=b6d8d9c76585db8ef5fa00d4931902fa4b8cbe8166f528f44fc403961a3f3759
 SHA_font=fab782a66f7d3019da64f6572db9fc5d3a4bcb19f9fa13e2d8a62e3693d6396e

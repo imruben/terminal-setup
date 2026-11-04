@@ -67,13 +67,23 @@ def container_for(dock, proto, addr, port):
 
 
 def start_of(pid):
-    """When a process started (/proc/PID/stat field 22) · None when gone (or not Linux)."""
+    """When a process started (/proc/PID/stat field 22; macOS: ps's start time) · None when gone."""
     try:
         with open(f"/proc/{pid}/stat", "rb") as f:
             stat = f.read().decode("utf-8", "replace")
         return int(stat[stat.rindex(")") + 2:].split()[19])
+    except FileNotFoundError:
+        if os.path.isdir("/proc/self"):
+            return None                          # Linux: the process is gone
     except (OSError, ValueError, IndexError):
         return None
+    # no /proc (macOS): ps's start time, to the second ("Tue Nov  4 10:12:33 2026")
+    try:
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+                             timeout=3, stdin=subprocess.DEVNULL).stdout.strip()
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return out or None
 
 
 def state_of(pid):
@@ -89,6 +99,7 @@ def state_of(pid):
                               timeout=3).stdout.strip()[:1]
     except (subprocess.TimeoutExpired, OSError):
         return ""
+HAS_PROC = os.path.isdir("/proc/self")
 PROC = re.compile(r'\("([^"]+)",pid=(\d+)')
 
 
@@ -174,7 +185,7 @@ class Ports(TableApp):
             # the pid is part of the id: two programs can listen on one port (SO_REUSEPORT)
             rows.append({"id": f"{proto}|{addr}|{port}|{pid}", "port": int(port), "proto": proto, "addr": addr,
                          "where": where(addr), "pid": pid, "name": name, "container": container,
-                         "start": start_of(pid) if pid else None})
+                         "start": start_of(pid) if pid and HAS_PROC else None})   # (macOS: at the question)
         return rows
 
     def order(self, rows):
@@ -248,12 +259,14 @@ class Ports(TableApp):
     def ask_kill(self, r, sig):
         what = f"{r['name']} ({r['pid']}), which listens on :{r['port']}"
         q = (f"Force kill {what}? unsaved work is lost" if sig == signal.SIGKILL else f"Stop {what}?")
+        if r.get("start") is None:               # macOS: noted now, checked when you answer
+            r = {**r, "start": start_of(r["pid"])}
         self.confirm(q, lambda: self.kill(r, sig), r)
 
     def kill(self, r, sig):
         """Only if that pid is still the same program (a pid is reused once its process ends) ·
         a stopped one (Ctrl+Z) also gets SIGCONT, or the SIGTERM would wait."""
-        if os.path.isdir("/proc") and start_of(r["pid"]) != r.get("start"):   # (unknown start: gone already)
+        if start_of(r["pid"]) != r.get("start"):
             self.flash(f"{r['name']} ({r['pid']}) is not running any more: nothing sent")
             self.reload()
             return

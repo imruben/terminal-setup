@@ -10,6 +10,7 @@
 
 REPO=$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 . "$REPO/install/lib.sh"
+[ -e "$(repo_path "$REPO")" ] && REPO=$(repo_path "$REPO")    # a folder with spaces: its link
 . "$REPO/install/config.sh"
 detect_platform
 USER=${USER:-$(id -un)}
@@ -37,6 +38,7 @@ for f in .zshrc .tmux.conf .zshenv; do
 done
 
 group "Loaded from the repo, not copied" "$(tilde "$REPO") · edit them there: git pull brings the changes to every machine"
+[ "$REPO" = "$REPO_LINK" ] && file "$REPO_LINK" "a link to the repo, whose folder has spaces (→ $(tilde "$(readlink "$REPO_LINK")"))"
 case $OS:$IS_WSL in macos:*) plat=macos ;; *:1) plat=wsl ;; *) plat=linux ;; esac
 repofile() { [ -e "$REPO/$1" ] && printf '    %s✔%s %-44s %s\n' "$GREEN" "$R" "$1" "$2"; }
 repofile zsh/zshrc "zsh: history, keys, completion, plugins, tmux autostart (your ~/.zshrc sources it)"
@@ -87,7 +89,7 @@ group "Programs outside the package manager" "when the system's own version is m
 # (on an Intel Mac /usr/local/bin/tmux is Homebrew's)
 [ "$OS" = macos ] || file /usr/local/bin/tmux "tmux built from source (Ubuntu 24.04: its tmux is older than 3.6)"
 file "$HOME/.local/bin/fzf" "fzf official binary (when Ubuntu's is older than 0.48)"
-file "$HOME/.local/bin/starship" "the prompt, official installer (when Ubuntu has no starship)"
+file "$HOME/.local/bin/starship" "the prompt, official binary (when Ubuntu has no starship)"
 file "$HOME/.local/bin/lazygit" "lazygit official binary (when Ubuntu has no lazygit)"
 file "$HOME/.local/bin/yq" "yq official binary (mikefarah's: Ubuntu's yq is another program)"
 file "$HOME/.local/bin/bat" "a link to batcat: Ubuntu calls bat \"batcat\""

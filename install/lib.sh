@@ -9,6 +9,14 @@ case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;;
 case ":$PATH:" in *":/usr/local/bin:"*) ;; *) PATH="/usr/local/bin:$PATH" ;; esac
 export PATH
 
+# A repo in a folder with spaces is used through a link without them: tmux, the monitor and the
+# plugins run its scripts through sh, which would cut the path at the space. install.sh makes it;
+# the scripts that build shell commands go through it (tmux/system.sh, zsh/zshrc, tmux/*.zsh).
+REPO_LINK="$HOME/.local/share/terminal-setup"
+repo_path() {   # repo_path <repo>: the path your files use for it
+  case $1 in *[[:space:]]*) printf '%s' "$REPO_LINK" ;; *) printf '%s' "$1" ;; esac
+}
+
 # logs of long steps (apt-get, the tmux build), shown only when they fail
 LOG_DIR=${XDG_CACHE_HOME:-$HOME/.cache}/terminal-setup
 

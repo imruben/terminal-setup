@@ -87,7 +87,7 @@ cd ~/workspace/terminal-setup
 ./install.sh
 ```
 
-> El repo puede estar en cualquier carpeta (sin espacios en la ruta). Si después lo mueves, vuelve a ejecutar `./install.sh` para que tus ficheros apunten al sitio nuevo.
+> El repo puede estar en cualquier carpeta. Si su ruta tiene espacios, el instalador crea un enlace sin ellos (`~/.local/share/terminal-setup`) y lo usa en todas partes. Si después lo mueves, vuelve a ejecutar `./install.sh` para que tus ficheros apunten al sitio nuevo.
 
 Al terminar, **abre una terminal nueva**.
 
@@ -102,7 +102,7 @@ cd ~/workspace/terminal-setup && ./install.sh
 - Te pedirá tu contraseña (`sudo`) para instalar paquetes.
 - **Ubuntu 24.04** trae versiones antiguas de algunas herramientas. El instalador lo detecta y, solo en ese caso:
   - **compila tmux 3.6** (24.04 trae la 3.4, y la configuración necesita la 3.6). Tarda un minuto y se instala en `/usr/local`.
-  - instala **fzf**, **fastfetch**, **starship** y **lazygit** desde sus versiones oficiales, porque las de 24.04 son antiguas o no existen (y **yq** siempre, también en 26.04: el `yq` de Ubuntu es otro programa). Cada descarga se comprueba con su sha256 (`install/versions.sh`) antes de usarla; starship es la excepción, porque su instalador oficial siempre trae la última versión.
+  - instala **fzf**, **fastfetch**, **starship** y **lazygit** desde sus versiones oficiales, porque las de 24.04 son antiguas o no existen (y **yq** siempre, también en 26.04: el `yq` de Ubuntu es otro programa). Cada descarga se comprueba con su sha256 (`install/versions.sh`) antes de usarla.
 - **Fuente**: si tienes escritorio, la instala en `~/.local/share/fonts`. Después, en la configuración de tu terminal (GNOME Terminal, Konsole, etc.), elige **JetBrainsMono Nerd Font**.
 - Por SSH en un servidor: la fuente va en el ordenador **desde el que te conectas**, no en el servidor.
 
@@ -206,7 +206,7 @@ Lo mismo con **`make`** (si no lo tienes: `sudo apt install make`; `./install.sh
 | tmux ≥ 3.6 | apt | compilado | Homebrew |
 | fzf ≥ 0.48 | apt | binario oficial (`~/.local/bin`) | Homebrew |
 | fastfetch | apt | `.deb` oficial | Homebrew |
-| starship | apt | instalador oficial (`~/.local/bin`) | Homebrew |
+| starship | apt | binario oficial (`~/.local/bin`) | Homebrew |
 | coreutils, flock, bash ≥ 4.2 | ya vienen | ya vienen | Homebrew (el `/bin/bash` de macOS es 3.2; tmux-autoreload necesita uno moderno) |
 | JetBrainsMono Nerd Font | `~/.local/share/fonts` (en WSL: en Windows) | igual | Homebrew |
 | plugins (tpm, resurrect, continuum, extrakto, fzf-url, logging, cowboy, autoreload, fzf-tab) | git | git | git |

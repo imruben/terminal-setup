@@ -7,6 +7,7 @@
 
 REPO=$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 . "$REPO/install/lib.sh"
+[ -e "$(repo_path "$REPO")" ] && REPO=$(repo_path "$REPO")    # a folder with spaces: its link
 . "$REPO/install/versions.sh"
 detect_platform
 problems=0

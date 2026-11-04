@@ -15,6 +15,12 @@
 
 emulate -L zsh
 export TERMINAL_SETUP=${0:A:h:h}            # the repo (this file is in its tmux/)
+# a repo in a folder with spaces: its link without them (install/lib.sh: repo_path), or the commands
+# this builds for tmux and sh would cut the path at the space
+() {   # (a variable, not ${:-…}: there the - of the name is a token and :A gets a broken path)
+  local link=$HOME/.local/share/terminal-setup
+  [[ $TERMINAL_SETUP == *[[:space:]]* && ${link:A} == $TERMINAL_SETUP ]] && TERMINAL_SETUP=$link
+}
 
 B=$'\e[1m' D=$'\e[2m' C=$'\e[36m' G=$'\e[32m' Y=$'\e[33m' M=$'\e[35m' X=$'\e[0m'
 TAB=$'\t'

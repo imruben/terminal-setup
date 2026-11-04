@@ -81,13 +81,24 @@ def tmux(*args):
 
 
 def start_of(pid):
-    """When a process started (in ticks since boot, /proc/PID/stat field 22) · None when gone."""
+    """When a process started (in ticks since boot, /proc/PID/stat field 22; macOS: ps's
+    start time) · None when gone."""
     try:
         with open(f"/proc/{pid}/stat", "rb") as f:
             stat = f.read().decode("utf-8", "replace")
         return int(stat[stat.rindex(")") + 2:].split()[19])
+    except FileNotFoundError:
+        if os.path.isdir("/proc/self"):
+            return None                          # Linux: the process is gone
     except (OSError, ValueError, IndexError):
         return None
+    # no /proc (macOS): ps's start time, to the second ("Tue Nov  4 10:12:33 2026")
+    try:
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+                             timeout=3, stdin=subprocess.DEVNULL).stdout.strip()
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return out or None
 
 
 class Procs(TableApp):
@@ -204,13 +215,15 @@ class Procs(TableApp):
             q = f"Force kill {r['name']} ({r['pid']})? it cannot clean up, unsaved work is lost"
         else:
             q = f"Stop {r['name']} ({r['pid']})?"
+        if r.get("start") is None:               # macOS (ps has no start time in the list): noted now
+            r = {**r, "start": start_of(r["pid"])}
         self.confirm(q, lambda: self.kill(r, sig), r)
 
     def kill(self, r, sig):
         """Only if that pid is still the same process (the question may have stayed open: a pid
         is reused once its process ends) · a stopped process (Ctrl+Z) also gets SIGCONT, or the
         SIGTERM would wait until something resumed it."""
-        if LINUX and start_of(r["pid"]) != r.get("start"):
+        if start_of(r["pid"]) != r.get("start"):
             self.flash(f"{r['name']} ({r['pid']}) is not running any more: nothing sent")
             self.reload()
             return

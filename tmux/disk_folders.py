@@ -200,9 +200,11 @@ class Folders(TableApp):
         for name, full, st in found or []:
             is_link = stat.S_ISLNK(st.st_mode)
             is_dir = stat.S_ISDIR(st.st_mode) or (is_link and os.path.isdir(full))   # a link to a folder opens it
+            small = False
             if is_dir:
                 size, _ = self.size_of(full)
                 other_disk = size is None and done and full in mounts
+                small = size is None and done and not other_disk and m.small(full)
             else:
                 size = st.st_blocks * 512 if hasattr(st, "st_blocks") else st.st_size     # on disk, like du
                 other_disk = False
@@ -210,7 +212,7 @@ class Folders(TableApp):
             icon = ICON["link"] if is_link else ICON["dir"] if is_dir else ICON["file"]
             rows.append({"id": full, "name": shown(name), "name_txt": f"{icon} {shown(name)}{'/' if is_dir else ''}",
                          "path": full, "dir": is_dir, "link": is_link, "size": size, "mtime": st.st_mtime,
-                         "mtime_txt": ago(st.st_mtime), "other_disk": other_disk,
+                         "mtime_txt": ago(st.st_mtime), "other_disk": other_disk, "small": small,
                          "partial": bool(is_dir and m and m.partial(full))})
         own, _ = self.size_of(path)
         self.total = own if own and done else total     # while measuring: what is known so far
@@ -218,11 +220,11 @@ class Folders(TableApp):
             frac = (r["size"] or 0) / self.total if self.total else 0
             r["frac"] = frac if r["size"] is not None else None
             r["share"] = (f"{bar(frac, 10)} {frac * 100:3.0f}%" if r["size"] is not None else
-                          ("other disk" if r["other_disk"] else "…" if not done else "?"))
+                          ("other disk" if r["other_disk"] else "< 1M" if r["small"] else "…" if not done else "?"))
         if path != "/":
             rows.append({"id": "..", "name": "..", "name_txt": f"{ICON['up']} ..", "path": os.path.dirname(path),
                          "dir": True, "link": False, "size": None, "frac": None, "mtime": None, "mtime_txt": "",
-                         "share": "", "other_disk": False, "partial": False})
+                         "share": "", "other_disk": False, "small": False, "partial": False})
         return rows
 
     def order(self, rows):
@@ -397,7 +399,8 @@ class Folders(TableApp):
             self.flash(f"could not open a session: {e.strerror}", ok=False)
 
     def ask_delete(self, r):
-        size = f" ({human(r['size'])})" if r["size"] else (" (size not known yet)" if r["dir"] else "")
+        size = f" ({human(r['size'])})" if r["size"] else (" (under 1M)" if r.get("small") else
+                                                              " (size not known yet)" if r["dir"] else "")
         what = "the folder" if r["dir"] and not r["link"] else "the link" if r["link"] else "the file"
         self.confirm(f"Delete {what} {disksrc.short(r['path'], 40)}{size}? No trash, no undo",
                      lambda: self.delete(r), r)

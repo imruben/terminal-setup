@@ -43,7 +43,19 @@ for arg in "$@"; do
   esac
 done
 BACKUP_DIR="$HOME/.terminal-setup-backup/$(date +%Y%m%d-%H%M%S)"
-case $REPO in *[[:space:]]*) die "the repo's path has spaces ($REPO): clone it somewhere without them" ;; esac
+# a folder with spaces: everything goes through a link without them (install/lib.sh: repo_path)
+REPO_REAL=$REPO
+if [ "$(repo_path "$REPO_REAL")" != "$REPO_REAL" ]; then
+  REPO=$(repo_path "$REPO_REAL")
+  if [ -e "$REPO" ] && [ ! -L "$REPO" ]; then
+    die "the repo's path has spaces, and $(tilde "$REPO") (its link without them) is already something else"
+  fi
+  if [ "$(readlink "$REPO" 2>/dev/null || true)" != "$REPO_REAL" ]; then
+    run mkdir -p "$(dirname "$REPO")"
+    run ln -sfn "$REPO_REAL" "$REPO"
+  fi
+  [ "$DRY_RUN" = 1 ] && REPO=$REPO_REAL       # (dry run: no link made, the files are read where they are)
+fi
 
 login_shell_zsh() {
   local zsh_path current

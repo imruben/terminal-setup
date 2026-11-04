@@ -524,20 +524,45 @@ class Brew:
         Brew._installed = (time.monotonic(), data)
         return data
 
+    _mine = (None, 0.0, None)    # (stamp of Cellar and Caskroom, when, rows)
+    _sizes = {}                  # Cellar/<name>/<version> → bytes: a version's folder never changes
+    MINE_KEEP = 600              # brew info is asked again at least this often (an install-on-request mark)
+
+    def stamp(self):
+        """Changes when a formula or cask is installed, upgraded or removed: Cellar and
+        Caskroom, and each package folder in them (a new version is a new folder there)."""
+        parts = []
+        for d in ("Cellar", "Caskroom"):
+            path = os.path.join(self.PREFIX, d)
+            try:
+                parts.append(os.stat(path).st_mtime_ns)
+                with os.scandir(path) as it:
+                    parts.extend((e.name, e.stat(follow_symlinks=False).st_mtime_ns) for e in it)
+            except OSError:
+                parts.append(None)
+        return hash(tuple(parts))
+
     def mine(self):
-        """What you asked for (installed on request), not what came along as a dependency."""
+        """What you asked for (installed on request), not what came along as a dependency ·
+        `brew info` (Ruby: seconds) only when something changed in Cellar or Caskroom."""
+        st, (old_st, at, cached) = self.stamp(), Brew._mine
+        if cached is not None and st == old_st and time.monotonic() - at < self.MINE_KEEP:
+            return [dict(r) for r in cached]
         rows = []
         data = self.installed_json(fresh=0)
         for f in data.get("formulae", []):
             inst = (f.get("installed") or [{}])[0]
             if inst.get("installed_on_request"):
                 cellar = os.path.join(self.PREFIX, "Cellar", f["name"], inst.get("version", ""))
+                if cellar not in Brew._sizes and os.path.isdir(cellar):
+                    Brew._sizes[cellar] = dir_size(cellar)
                 rows.append({"name": f["name"], "version": inst.get("version", ""),
-                             "size": dir_size(cellar) if os.path.isdir(cellar) else None, "desc": f.get("desc") or ""})
+                             "size": Brew._sizes.get(cellar), "desc": f.get("desc") or ""})
         for c in data.get("casks", []):           # apps (macOS): always yours, there are no cask dependencies
             rows.append({"name": c.get("token", ""), "version": c.get("installed") or "", "size": None,
                          "desc": c.get("desc") or (c.get("name") or [""])[0], "kind": "cask"})
-        return rows
+        Brew._mine = (st, time.monotonic(), rows)
+        return [dict(r) for r in rows]
 
     def updates(self):
         try:

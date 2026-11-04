@@ -6,7 +6,7 @@
 #    tmux       ≥ 3.6   24.04 has 3.4      → built from source (install/tmux-build.sh)
 #    fzf        ≥ 0.48  24.04 has 0.44     → official binary in ~/.local/bin
 #    fastfetch          not in 24.04       → official .deb
-#    starship           not in 24.04       → official installer, in ~/.local/bin
+#    starship           not in 24.04       → official binary in ~/.local/bin
 #    lazygit            not in 24.04       → official binary in ~/.local/bin
 #    yq                 Ubuntu's "yq" is another program (a Python jq wrapper)
 #                                          → mikefarah/yq's official binary in ~/.local/bin
@@ -92,7 +92,7 @@ apt_show_plan() {
   [ "$NEED_TMUX_BUILD" = 1 ] && info "tmux $TMUX_VERSION: built from source (Ubuntu's is older than $TMUX_MIN)"
   [ "$NEED_FZF" = 1 ] && info "fzf $FZF_VERSION: official binary in ~/.local/bin (Ubuntu's is older than $FZF_MIN)"
   [ "$NEED_FASTFETCH" = 1 ] && info "fastfetch $FASTFETCH_VERSION: official .deb (not in this Ubuntu)"
-  [ "$NEED_STARSHIP" = 1 ] && info "starship: official installer, in ~/.local/bin (not in this Ubuntu)"
+  [ "$NEED_STARSHIP" = 1 ] && info "starship $STARSHIP_VERSION: official binary in ~/.local/bin (not in this Ubuntu)"
   [ "$NEED_LAZYGIT" = 1 ] && info "lazygit $LAZYGIT_VERSION: official binary in ~/.local/bin (not in this Ubuntu)"
   [ "$NEED_YQ" = 1 ] && info "yq $YQ_VERSION: official binary in ~/.local/bin (Ubuntu's yq is a different program)"
   return 0
@@ -138,11 +138,13 @@ apt_install() {
     ok "fastfetch $FASTFETCH_VERSION"
   fi
   if [ "$NEED_STARSHIP" = 1 ]; then
+    local ssarch=x86_64; [ "$ARCH" = arm64 ] && ssarch=aarch64
+    # the release's binary at a set version, checked (its install.sh would fetch whatever is newest)
+    download "https://github.com/starship/starship/releases/download/v$STARSHIP_VERSION/starship-$ssarch-unknown-linux-musl.tar.gz" \
+      "$tmp/starship.tgz" "starship_$ARCH"
     run mkdir -p ~/.local/bin
-    # downloaded first: piped into sh, a failed download would look like a good install
-    run curl -fsSL -o "$tmp/starship-install.sh" https://starship.rs/install.sh
-    run sh -c "sh '$tmp/starship-install.sh' -y -b '$HOME/.local/bin' >/dev/null"
-    ok "starship in ~/.local/bin"
+    run tar -xzf "$tmp/starship.tgz" -C ~/.local/bin starship
+    ok "starship $STARSHIP_VERSION in ~/.local/bin"
   fi
   if [ "$NEED_LAZYGIT" = 1 ]; then
     local lgarch=x86_64; [ "$ARCH" = arm64 ] && lgarch=arm64

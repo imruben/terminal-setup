@@ -15,6 +15,8 @@ set -euo pipefail
 
 REPO=$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 . "$REPO/install/lib.sh"
+REPO_REAL=$REPO
+[ -e "$(repo_path "$REPO")" ] && REPO=$(repo_path "$REPO")    # a folder with spaces: its link
 ASSUME_YES=0 DRY_RUN=0
 case ${1:-} in -y|--yes) ASSUME_YES=1 ;; "") ;; *) die "unknown option: $1 (./uninstall.sh [--yes])" ;; esac
 BACKUP_DIR="$HOME/.terminal-setup-backup/$(date +%Y%m%d-%H%M%S)"
@@ -84,5 +86,9 @@ fi
 
 # shellcheck disable=SC2033  # tmux's own info command, not our info()
 tmux info >/dev/null 2>&1 && [ -f "$HOME/.tmux.conf" ] && tmux source-file "$HOME/.tmux.conf" >/dev/null 2>&1 || true
+# the link install.sh made for a folder with spaces
+if [ "$REPO" != "$REPO_REAL" ] && [ -L "$REPO" ] && [ "$(readlink "$REPO")" = "$REPO_REAL" ]; then
+  rm "$REPO"; ok "removed the link $(tilde "$REPO") (the repo's folder has spaces)"
+fi
 [ -d "$BACKUP_DIR" ] && printf '\n    A copy of your files as they were: %s\n' "$(tilde "$BACKUP_DIR")"
 printf '\n    Done. Open a new terminal (a running tmux keeps the old key bindings until it restarts).\n\n'

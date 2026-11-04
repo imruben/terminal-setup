@@ -8,6 +8,12 @@
 
 emulate -L zsh
 export TERMINAL_SETUP=${0:A:h:h}            # the repo (this file is in its tmux/)
+# a repo in a folder with spaces: its link without them (install/lib.sh: repo_path), or the commands
+# this builds for tmux and sh would cut the path at the space
+() {   # (a variable, not ${:-…}: there the - of the name is a token and :A gets a broken path)
+  local link=$HOME/.local/share/terminal-setup
+  [[ $TERMINAL_SETUP == *[[:space:]]* && ${link:A} == $TERMINAL_SETUP ]] && TERMINAL_SETUP=$link
+}
 client=${1:-$(tmux display -p '#{client_name}')}
 
 # 25 rows tall · in a shorter terminal the section titles go (22 rows) · shorter still,

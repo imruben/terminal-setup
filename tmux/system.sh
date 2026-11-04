@@ -27,6 +27,10 @@
 # ═══════════════════════════════════════════════════════════════
 
 TERMINAL_SETUP=$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)   # the repo (this file is in its tmux/)
+# a repo in a folder with spaces: its link without them (install/lib.sh: repo_path), or the pane
+# commands and hooks built below would cut the path at the space
+link=$HOME/.local/share/terminal-setup
+[[ $TERMINAL_SETUP == *[[:space:]]* && $(CDPATH='' cd "$link" 2>/dev/null && pwd -P) == "$TERMINAL_SETUP" ]] && TERMINAL_SETUP=$link
 export TERMINAL_SETUP
 S=system
 D=$TERMINAL_SETUP/tmux/system

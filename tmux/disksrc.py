@@ -205,9 +205,14 @@ def short(path, width=40):
 
 
 class Measure:
-    """du -xk ROOT, read as it goes: sizes[folder] = bytes for every folder under ROOT
-    (on the same filesystem). unreadable: folders du could not read (no permission),
-    so their sizes and their parents' are lower bounds."""
+    """du -xk ROOT, read as it goes: sizes[folder] = bytes for the folders under ROOT (on the
+    same filesystem) · every one down to KEEP_DEPTH levels, and deeper only from KEEP_MIN up: a
+    home with a million small folders (node_modules, caches) would take hundreds of MB to keep
+    them all. small() tells a folder left out that way (shown as "< 1M"; opening it measures it).
+    unreadable: folders du could not read (no permission), so their sizes and their parents'
+    are lower bounds."""
+    KEEP_DEPTH = 3
+    KEEP_MIN = 1 << 20
 
     def __init__(self, root, on_progress):
         self.root, self.on_progress = root, on_progress
@@ -217,6 +222,7 @@ class Measure:
         self.started, self.finished = time.time(), None
         self.proc = None
         self.dev = device(root)
+        self.depth = root.rstrip("/").count("/")
         threading.Thread(target=self.work, daemon=True).start()
 
     def work(self):
@@ -235,7 +241,9 @@ class Measure:
         for raw in self.proc.stdout:
             kb, _, path = raw.decode("utf-8", "surrogateescape").rstrip("\n").partition("\t")
             if kb.isdigit():
-                self.sizes[path] = int(kb) * 1024
+                size = int(kb) * 1024
+                if size >= self.KEEP_MIN or path.count("/") - self.depth <= self.KEEP_DEPTH:
+                    self.sizes[path] = size
                 self.count += 1
             if time.monotonic() - last > 0.5:
                 last = time.monotonic()
@@ -272,6 +280,11 @@ class Measure:
     def covers(self, path):
         """path is inside the measured folder and on the same disk (du -x does not go further)."""
         return (path == self.root or path.startswith(self.root.rstrip("/") + "/")) and device(path) == self.dev
+
+    def small(self, path):
+        """du measured path and left it out (deep, and under KEEP_MIN): its size is below that."""
+        return (self.done and not self.cancelled and path not in self.sizes
+                and path.count("/") - self.depth > self.KEEP_DEPTH and self.covers(path))
 
     def partial(self, path):
         """Some folder at or under path could not be read: its size is a lower bound."""
