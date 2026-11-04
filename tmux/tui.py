@@ -343,6 +343,12 @@ class Screen:
                 pass
         signal.signal(signal.SIGWINCH, lambda *_: poke(b"."))
         signal.signal(signal.SIGUSR1, lambda *_: poke(b"v"))
+        # killed or its terminal closed: leave through __exit__, which gives the terminal back
+        # (outside tmux, the picker of a new tab, it would stay raw, mouse on, no autowrap)
+        def leave(*_):
+            raise SystemExit(0)
+        signal.signal(signal.SIGTERM, leave)
+        signal.signal(signal.SIGHUP, leave)
         self.tick = None
         return self
 
@@ -375,7 +381,9 @@ class Screen:
         lines = lines[:max(1, rows)]
         extra = over.rows_text() if over else {}
         x = over.x if over else 1
-        frame = {n: l + RESET + CLEAR_EOL for n, l in enumerate(lines, 1)}
+        # the row is cleared before it is written, not after: with no autowrap the cursor stays on
+        # the last cell once it is written, and an erase after it would take that cell (scrollbars)
+        frame = {n: RESET + "\x1b[2K" + l + RESET for n, l in enumerate(lines, 1)}
         for n, seg in extra.items():                 # the menu's piece goes with its row
             if 1 <= n <= rows:
                 frame[n] = frame.get(n, "\x1b[2K") + f"\x1b[{n};{x}H{seg}"
@@ -423,7 +431,10 @@ class Screen:
                     yield ("resize",)
                 if self.fd not in r:
                     continue
-            data, self.carry = getattr(self, "carry", b"") + os.read(self.fd, 4096), b""
+            got = os.read(self.fd, 4096)
+            if not got:                                  # the terminal is gone: never spin on it
+                raise SystemExit(0)
+            data, self.carry = getattr(self, "carry", b"") + got, b""
             # a read can end in the middle of a sequence (fast mouse moves) or of a UTF-8
             # character: give the rest 30 ms, and keep what is still cut off for the next read
             # (an Esc alone after 30 ms is the Esc key)
@@ -483,7 +494,7 @@ def coalesce(events):
         yield held
 
 
-PASTE = re.compile(rb"\x1b\[200~(.*?)(?:\x1b\[201~|$)", re.S)
+PASTE = re.compile(rb"\x1b\[200~(.*?)(?:\x1b\[201~|\Z)", re.S)     # (\Z: $ would leave a last \n as Enter)
 
 
 def parse(data):
@@ -516,7 +527,9 @@ def parse(data):
                 n = 2
                 while n < len(data) and 0x80 <= data[n] < 0xC0:
                     n += 1
-                yield ("key", "alt-" + data[1:n].decode("utf-8", "ignore"))
+                key = data[1:n].decode("utf-8", "ignore")
+                if key:
+                    yield ("key", "alt-" + key)
                 data = data[n:]
             elif ch in CTRL:
                 yield ("key", CTRL[ch])
@@ -525,7 +538,9 @@ def parse(data):
                 n = 1                                   # keep UTF-8 typing intact
                 while n < len(data) and 0x80 <= data[n] < 0xC0:
                     n += 1
-                yield ("char", data[:n].decode("utf-8", "ignore"))
+                text = data[:n].decode("utf-8", "ignore")
+                if text:                                # (an invalid byte is no key: "" matches every key)
+                    yield ("char", text)
                 data = data[n:]
             else:
                 data = data[1:]

@@ -60,7 +60,9 @@ def container_for(dock, proto, addr, port):
     owners = dock.get((proto, port), [])
     ip = addr.strip("[]").split("%")[0]
     exact = [n for i, n in owners if i == ip]
-    anyip = [n for i, n in owners if i in ("", "0.0.0.0", "::")]
+    # all IPs of the same family: a program of yours on [::1]:8080 is not the container on 0.0.0.0:8080
+    v6 = ":" in ip
+    anyip = [n for i, n in owners if i == "" or ip in ("*", "") or (i == "::" if v6 else i == "0.0.0.0")]
     return (exact or anyip or [None])[0]
 
 
@@ -103,8 +105,11 @@ def sockets():
             parts = line.split(None, 6)
             if len(parts) < 5:
                 continue
-            m = PROC.search(parts[6]) if len(parts) > 6 else None
-            yield parts[0], parts[4], (int(m[2]) if m else None), (m[1] if m else "?")
+            # several processes can share the socket (nginx, gunicorn, php-fpm: the master and its
+            # workers), in no set order: the lowest pid is the master, which stopping a worker would not stop
+            ms = PROC.findall(parts[6]) if len(parts) > 6 else []
+            m = min(ms, key=lambda x: int(x[1])) if ms else None
+            yield parts[0], parts[4], (int(m[1]) if m else None), (m[0] if m else "?")
         return
     # two calls: lsof's TCP state filter would also drop every UDP socket
     out = ""
@@ -248,7 +253,7 @@ class Ports(TableApp):
     def kill(self, r, sig):
         """Only if that pid is still the same program (a pid is reused once its process ends) ·
         a stopped one (Ctrl+Z) also gets SIGCONT, or the SIGTERM would wait."""
-        if r.get("start") is not None and start_of(r["pid"]) != r["start"]:
+        if os.path.isdir("/proc") and start_of(r["pid"]) != r.get("start"):   # (unknown start: gone already)
             self.flash(f"{r['name']} ({r['pid']}) is not running any more: nothing sent")
             self.reload()
             return

@@ -51,11 +51,12 @@ session_exists() { tmux has-session -t "=$1" 2>/dev/null }
 session_names()  { tmux ls -F '#{session_name}' 2>/dev/null }
 current_session() { [[ -n $TMUX ]] && tmux display -p '#S' 2>/dev/null }
 
-# tmux does not allow "." or ":" in session names; spaces around go, and a leading "-"
+# tmux does not allow "." or ":" in session names, expands "#" and ends a command at a
+# trailing ";" (all four become -); spaces around go, and a leading "-"
 # would be read as an option
 clean_name() {
   local n=${${1##[[:space:]]#}%%[[:space:]]#}
-  n=${${n//[.:]/-}//[[:space:]]##/-}
+  n=${${n//[.:#;]/-}//[[:space:]]##/-}
   print -r -- ${n##-#}
 }
 

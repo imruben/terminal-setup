@@ -37,7 +37,10 @@ ICON = dict(open="\U000F0770", ui="\U000F02A2", shell="\U000F018D", fetch="\U000
             push="\U000F0552", web="\U000F059F", copy="\U000F018F", folder="\U000F024B", add="\U000F0257",
             edit="\U000F03EB", remove="\U000F0A7A", scan="\U000F0450")
 # fetch / pull / push: no terminal and no graphical password window either (WSLg, a desktop)
-NET_ENV = {**gitsrc.GIT_ENV, "SSH_ASKPASS_REQUIRE": "never", "GIT_ASKPASS": "true"}
+# · a server that stops answering (VPN down) gives up after 30 s under 1 KB/s, not at the 120 s
+# limit, which would hold one of the few network slots (`fetch every repo` waits on them)
+NET_ENV = {"GIT_HTTP_LOW_SPEED_LIMIT": "1000", "GIT_HTTP_LOW_SPEED_TIME": "30",     # (yours, when set, win)
+           **gitsrc.GIT_ENV, "SSH_ASKPASS_REQUIRE": "never", "GIT_ASKPASS": "true"}
 
 
 def changes_text(st):

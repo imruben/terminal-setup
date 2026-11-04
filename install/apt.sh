@@ -20,10 +20,12 @@ APT_PACKAGES="zsh git curl ca-certificates python3 jq eza bat micro btop entr an
 APT_DESKTOP="wl-clipboard"
 
 # apt-get without its screens of dpkg output: kept in a log, shown only when it fails
-# (sudo drops DEBIAN_FRONTEND, so it is passed explicitly)
-APT_LOG=${TMPDIR:-/tmp}/terminal-setup-apt.log
+# (sudo drops DEBIAN_FRONTEND, so it is passed explicitly) · in your own cache folder: a fixed
+# name in /tmp left by a sudo run or another user could not be written (protected_regular)
+APT_LOG=$LOG_DIR/apt.log
 apt_get() {
   if [ "${DRY_RUN:-0}" = 1 ]; then run apt-get "$@"; return; fi
+  mkdir -p "$LOG_DIR"
   if [ "$(id -u)" = 0 ]; then set -- env DEBIAN_FRONTEND=noninteractive apt-get -y -q "$@"
   else set -- sudo env DEBIAN_FRONTEND=noninteractive apt-get -y -q "$@"; fi
   "$@" >"$APT_LOG" 2>&1 || { tail -20 "$APT_LOG" >&2; die "apt-get failed (full log: $APT_LOG)"; }
@@ -34,10 +36,13 @@ apt_installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q " inst
 
 # The plan needs the package lists to know what Ubuntu offers: only a fresh system has none,
 # and only then they are fetched before you said yes. Lists older than a day are refreshed
-# after it, before installing. (pkgcache.bin is rebuilt on every update; the lists keep the
-# server's dates, not the download's)
+# after it, before installing. (Fresh: Ubuntu's stamp of the last good update, or a list
+# written in the last day · not pkgcache.bin, which every apt install also rebuilds, and not
+# the lists' own dates, which are the server's)
 apt_has_lists()     { [ -n "$(find /var/lib/apt/lists -maxdepth 1 -name '*_Packages' 2>/dev/null | head -1)" ]; }
-apt_lists_recent()  { [ -n "$(find /var/cache/apt/pkgcache.bin -mmin -1440 2>/dev/null)" ]; }
+apt_lists_recent()  {
+  [ -n "$(find /var/lib/apt/periodic/update-success-stamp /var/lib/apt/lists -maxdepth 0 -mmin -1440 2>/dev/null)" ]
+}
 apt_refresh_lists() {
   apt_has_lists && return
   info "no package lists yet: fetching them first to plan (apt-get update, asks for your password)…"
@@ -85,7 +90,9 @@ apt_show_plan() {
 apt_install() {
   export DEBIAN_FRONTEND=noninteractive
   step "Ubuntu packages"
-  if [ -n "$APT_MISSING" ] && ! apt_lists_recent; then
+  # everything that goes through apt-get install (the tmux build's compilers, fastfetch's .deb
+  # too): old lists point at .debs the mirror no longer has
+  if { [ -n "$APT_MISSING" ] || [ "$NEED_TMUX_BUILD" = 1 ] || [ "$NEED_FASTFETCH" = 1 ]; } && ! apt_lists_recent; then
     info "refreshing the package lists (apt-get update)…"
     apt_get update
   fi

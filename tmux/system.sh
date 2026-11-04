@@ -26,7 +26,7 @@
 #  session-closed hook recreates it; it is left out of tmux-resurrect saves.
 # ═══════════════════════════════════════════════════════════════
 
-TERMINAL_SETUP=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)   # the repo (this file is in its tmux/)
+TERMINAL_SETUP=$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)   # the repo (this file is in its tmux/)
 export TERMINAL_SETUP
 S=system
 D=$TERMINAL_SETUP/tmux/system
@@ -37,7 +37,7 @@ RES_ROWS=8; { command -v nvidia-smi || [[ -x /usr/lib/wsl/lib/nvidia-smi ]]; } &
 # the config's own ensure take the same one): the socket's path, as tmux would make it
 sock=${TMUX%%,*}
 [[ -z $sock ]] && sock=$(tmux display -p '#{socket_path}' 2>/dev/null)
-[[ -z $sock ]] && sock=$(cd "${TMUX_TMPDIR:-/tmp}" 2>/dev/null && pwd -P)/tmux-$UID/default   # as tmux resolves it (/private/tmp on macOS)
+[[ -z $sock ]] && sock=$(CDPATH='' cd "${TMUX_TMPDIR:-/tmp}" 2>/dev/null && pwd -P)/tmux-$UID/default   # as tmux resolves it (/private/tmp on macOS)
 key=${sock//\//_}
 run_dir=${XDG_RUNTIME_DIR:-/tmp}; [[ -d $run_dir && -w $run_dir ]] || run_dir=/tmp
 LOCK=$run_dir/tmux-system-$UID-$key.lock
@@ -120,10 +120,26 @@ healthy() {
 # lives in a subshell so it is released as soon as the work is done, never held by an
 # attached client; -w 5 so nothing can ever wait on it for long.
 # another build still running after 5 s: it does it · no flock at all (macOS without Homebrew's
-# on PATH): build anyway, unlocked, rather than never
-locked() {
-  command -v flock >/dev/null || { "$@"; return; }
-  ( flock -w 5 9 || exit 0; "$@" ) 9>"$LOCK"
+# on PATH): a mkdir lock instead (mkdir is atomic too). Never unlocked: every split of a build
+# fires a repair, which would see the half-built session as broken and start another build.
+mkdir_lock() {   # $1: seconds to wait · a lock left by a build that died (2 min old) is taken over
+  local n=$(( $1 * 10 ))
+  until mkdir "$LOCK.d" 2>/dev/null; do
+    if [[ -n $(find "$LOCK.d" -maxdepth 0 -mmin +2 2>/dev/null) ]]; then rmdir "$LOCK.d" 2>/dev/null; continue; fi
+    (( n-- > 0 )) || return 1
+    sleep 0.1
+  done
+}
+locked() {   # $1: seconds to wait (0: give up at once), then the command
+  local wait=$1; shift
+  if command -v flock >/dev/null; then
+    ( flock -w "$wait" 9 || exit 0; "$@" ) 9>"$LOCK"
+  else
+    mkdir_lock "$wait" || return 0
+    "$@"; local rc=$?
+    rmdir "$LOCK.d" 2>/dev/null
+    return $rc
+  fi
 }
 
 ensure_now() {
@@ -134,9 +150,9 @@ ensure_now() {
     local was; was=$(tmux display -p -t "$S:" '#W' 2>/dev/null)
     tmux rename-session -t "=$S" "$S-old"
     build
+    keep_own_tabs                                  # first: the tab you were on may be one of yours
     [[ -n $was ]] && tmux select-window -t "$S:$was" 2>/dev/null
     tmux list-clients -t "$S-old" -F '#{client_name}' | while read -r c; do tmux switch-client -c "$c" -t "=$S"; done
-    keep_own_tabs
     tmux kill-session -t "=$S-old"
   else
     build
@@ -147,9 +163,9 @@ restart_now() {
   local was; was=$(tmux display -p -t "$S:" '#W' 2>/dev/null)
   tmux rename-session -t "=$S" "$S-old" 2>/dev/null
   build
+  keep_own_tabs
   [[ -n $was ]] && tmux select-window -t "$S:$was" 2>/dev/null
   tmux list-clients -t "$S-old" -F '#{client_name}' 2>/dev/null | while read -r c; do tmux switch-client -c "$c" -t "=$S"; done
-  keep_own_tabs
   tmux kill-session -t "=$S-old" 2>/dev/null
 }
 
@@ -174,7 +190,7 @@ sync_descriptions() {
   done < ~/.tmux/descriptions.tsv
 }
 
-ensure() { locked ensure_now; sync_descriptions; }
+ensure() { locked 5 ensure_now; sync_descriptions; }
 
 # Hooks run these while tmux may be shutting down (kill-server closes every session, and
 # session-closed fires): they must never start a new, invisible server. NOSTART → `tmux -N`.
@@ -183,9 +199,8 @@ server_up() { tmux -N start-server 2>/dev/null; }   # -N: only asks, never start
 case $1 in
   ensure|-d) server_up || exit 0; NOSTART=1; ensure ;;
   # from hooks (a pane / tab of system was closed): never queue up behind a build in progress
-  repair)    server_up || exit 0; NOSTART=1
-             if command -v flock >/dev/null; then ( flock -n 9 || exit 0; ensure_now ) 9>"$LOCK"; else ensure_now; fi ;;
-  restart)   server_up || exit 0; NOSTART=1; locked restart_now ;;
+  repair)    server_up || exit 0; NOSTART=1; locked 0 ensure_now ;;
+  restart)   server_up || exit 0; NOSTART=1; locked 5 restart_now ;;
   go)        NOSTART=1; ensure; tmux switch-client ${2:+-c "$2"} -t "=$S" ;;
   ""|open)   if ! tmux show -gv exit-empty &>/dev/null; then tmux start-server; fi
              ensure

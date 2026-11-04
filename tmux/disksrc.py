@@ -147,7 +147,7 @@ def mount_points():
             for line in f:
                 parts = line.split()
                 if len(parts) > 1:
-                    found.append(parts[1].replace("\\040", " ").replace("\\011", "\t"))
+                    found.append(re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), parts[1]))   # \040 is a space…
     except OSError:
         for line in run_text("mount", timeout=10).splitlines():
             m = re.match(r".+? on (.+) \(", line)

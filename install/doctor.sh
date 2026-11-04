@@ -5,7 +5,7 @@
 #  bash install/doctor.sh). ✔ fine · ✘ needed and missing / too old · – optional
 # ═══════════════════════════════════════════════════════════════
 
-REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+REPO=$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 . "$REPO/install/lib.sh"
 . "$REPO/install/versions.sh"
 detect_platform

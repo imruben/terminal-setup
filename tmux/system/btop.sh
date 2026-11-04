@@ -23,6 +23,6 @@ if [[ $p == none ]]; then
   trap 'exec "$0"' WINCH          # bigger now (zoomed, a larger window)? check again: btop when it fits
   while :; do sleep 60 & wait $!; done
 fi
-conf=$(cd "$(dirname "$0")/../.." && pwd)/config/btop/btop.conf
+conf=$(CDPATH='' cd "$(dirname "$0")/../.." && pwd)/config/btop/btop.conf
 if btop --help 2>&1 | grep -q -- '--config'; then exec btop -c "$conf" -p "$p"; fi
 exec btop -p "$p"

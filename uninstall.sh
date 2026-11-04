@@ -13,7 +13,7 @@
 # ═══════════════════════════════════════════════════════════════
 set -euo pipefail
 
-REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+REPO=$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 . "$REPO/install/lib.sh"
 ASSUME_YES=0 DRY_RUN=0
 case ${1:-} in -y|--yes) ASSUME_YES=1 ;; "") ;; *) die "unknown option: $1 (./uninstall.sh [--yes])" ;; esac
@@ -59,7 +59,9 @@ if [ -n "$links" ]; then
     fi
     ok "removed the link ~/$f"
   done
-  old=$(ls -d "$HOME"/.terminal-setup-backup/*/ 2>/dev/null | sort | tail -1 || true); old=${old%/}
+  # the newest backup with a MANIFEST (the one the old install made): this run's own copies
+  # above went to a newer folder, without one
+  old=$(ls -d "$HOME"/.terminal-setup-backup/*/MANIFEST 2>/dev/null | sort | tail -1 || true); old=${old%/MANIFEST}
   if [ -n "$old" ] && [ -f "$old/MANIFEST" ]; then
     while read -r rel; do
       [ -e "$old/$rel" ] || [ -L "$old/$rel" ] || continue

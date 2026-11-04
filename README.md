@@ -71,7 +71,7 @@ Funciona en **Ubuntu 26.04**, **Ubuntu 24.04**, **WSL** (Ubuntu dentro de Window
 
 La pestaña **git** busca repos en las carpetas de `~/.tmux/git-roots` (una por línea, y opcionalmente cuántos niveles bajar: `~/clientes 2`). Sin ese fichero mira `~/workspace`, `~/projects`, `~/code`, `~/src`, `~/dev`, `~/repos` y `~/git`. Se cambia desde el propio panel: clic derecho → *Add a folder to look in…* o *Edit the folders to look in…*.
 
-Solo trabaja lo que estás viendo: las pestañas ocultas (y todo el monitor cuando no está a la vista o nadie está conectado) no leen nada ni gastan CPU, y se ponen al día en cuanto aparecen.
+Solo trabaja lo que estás viendo: las pestañas ocultas (y todo el monitor cuando no está a la vista o nadie está conectado) no leen nada ni gastan CPU, y se ponen al día en cuanto aparecen. La excepción es **btop** (pestaña info), que sigue refrescándose cada 2 s por su cuenta.
 
 Cada panel tiene su botón de **zoom**, su menú (clic derecho o `Enter`) y se adapta a cualquier tamaño de ventana. En las listas: escribe para filtrar (`Esc` o clic en **✕** lo borra), `↑↓` para moverte, `← →` o clic en un título para ordenar (`Ctrl+r` invierte), `Tab` para cambiar de fuente (all · apt · snap · brew). En los paneles de detalle y logs, `Tab` o `← →` cambian de pestaña.
 
@@ -102,7 +102,7 @@ cd ~/workspace/terminal-setup && ./install.sh
 - Te pedirá tu contraseña (`sudo`) para instalar paquetes.
 - **Ubuntu 24.04** trae versiones antiguas de algunas herramientas. El instalador lo detecta y, solo en ese caso:
   - **compila tmux 3.6** (24.04 trae la 3.4, y la configuración necesita la 3.6). Tarda un minuto y se instala en `/usr/local`.
-  - instala **fzf**, **fastfetch** y **starship** desde sus versiones oficiales, porque las de 24.04 son antiguas o no existen.
+  - instala **fzf**, **fastfetch**, **starship** y **lazygit** desde sus versiones oficiales, porque las de 24.04 son antiguas o no existen (y **yq** siempre, también en 26.04: el `yq` de Ubuntu es otro programa).
 - **Fuente**: si tienes escritorio, la instala en `~/.local/share/fonts`. Después, en la configuración de tu terminal (GNOME Terminal, Konsole, etc.), elige **JetBrainsMono Nerd Font**.
 - Por SSH en un servidor: la fuente va en el ordenador **desde el que te conectas**, no en el servidor.
 

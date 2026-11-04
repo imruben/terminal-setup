@@ -217,9 +217,22 @@ MULTI = {"identityfile", "localforward", "remoteforward", "dynamicforward", "cer
 ERRORS = {}            # dest → why ssh -G failed (a typo in ~/.ssh/config: "Bad configuration option")
 
 
+_resolved = {}          # (dest, extra) → (config stamp, when, answer)
+
+
 def resolve(dest, extra=()):
     """How ssh would connect to dest (`ssh -G`, with the options of a command from your
-    history: -p 2222 -i key): {option: value} (lists for repeatable ones)."""
+    history: -p 2222 -i key): {option: value} (lists for repeatable ones) · kept a minute
+    while the config does not change: ssh -G also runs your config's `Match exec` commands,
+    and the panes ask every few seconds."""
+    key, stamp = (dest, tuple(extra)), config_stamp()
+    hit = _resolved.get(key)
+    if not (hit and hit[0] == stamp and time.monotonic() - hit[1] < 60):
+        hit = _resolved[key] = (stamp, time.monotonic(), _resolve(dest, extra))
+    return {k: list(v) if isinstance(v, list) else v for k, v in hit[2].items()}   # (a copy: callers may change it)
+
+
+def _resolve(dest, extra):
     rc, out, err = run(["ssh", "-G", *extra, dest], timeout=5)
     if rc:
         lines = [l.strip() for l in err.splitlines() if l.strip() and "Pseudo-terminal" not in l]
@@ -275,7 +288,7 @@ def git_service(cfg):
 
 # ─── history and what runs now ───
 WRAPPERS = {"sudo": "ugCDhpRrTt", "exec": "", "command": "", "time": "", "nohup": "", "env": "uSC"}
-SFTP_ARGS = set("BbcDFiJlPRSs")
+SFTP_ARGS = set("BbcDFiJloPRSs")
 
 
 def parse_ssh(cmd):
@@ -541,7 +554,8 @@ def login_problem(err):
 
 # a check opens no forward of the config, runs no RemoteCommand, asks for no terminal
 CHECK = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "RemoteCommand=none", "-o", "RequestTTY=no",
-         "-o", "ClearAllForwardings=yes", "-o", "ControlMaster=no", "-o", "ControlPath=none"]
+         "-o", "ClearAllForwardings=yes", "-o", "ControlMaster=no", "-o", "ControlPath=none",
+         "-o", "PermitLocalCommand=no", "-o", "ForwardAgent=no", "-o", "ForwardX11=no"]   # (nor your LocalCommand)
 
 
 def git_account(dest):

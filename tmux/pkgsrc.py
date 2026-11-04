@@ -45,8 +45,9 @@ C_ENV = {**os.environ, "LC_ALL": "C"}
 
 def run_text(*argv, env=None, timeout=60):
     try:
-        return subprocess.run(argv, capture_output=True, text=True, env=env or C_ENV, timeout=timeout).stdout
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return subprocess.run(argv, capture_output=True, text=True, env=env or C_ENV, timeout=timeout,
+                              stdin=subprocess.DEVNULL, errors="replace").stdout
+    except (subprocess.TimeoutExpired, OSError):
         return ""
 
 
@@ -553,9 +554,10 @@ class Brew:
         (instant to search). Homebrew 7 keeps it in api/internal/packages.<platform>.jws.json,
         older ones in api/formula.jws.json."""
         api = self.api_dir()
-        files = sorted(glob.glob(os.path.join(api, "internal", "packages.*.jws.json"))) or \
-            [os.path.join(api, "formula.jws.json")]
-        path = files[0]
+        files = glob.glob(os.path.join(api, "internal", "packages.*.jws.json"))
+        # the newest: after a macOS upgrade the old platform's file stays behind
+        path = max(files, key=lambda f: os.path.getmtime(f) if os.path.exists(f) else 0) if files \
+            else os.path.join(api, "formula.jws.json")
         try:
             mtime = os.path.getmtime(path)
         except OSError:

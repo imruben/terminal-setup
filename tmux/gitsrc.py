@@ -182,7 +182,8 @@ def find_repos(roots, saved=True):
 # ─── asking git ───
 def git(repo, *args, timeout=15):
     try:
-        res = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, env=GIT_ENV,
+        # core.fsmonitor is a command in the repo's own config: a repo you only unpacked would run it
+        res = subprocess.run(["git", "-c", "core.fsmonitor=false", "-C", repo, *args], capture_output=True, text=True, env=GIT_ENV,
                              timeout=timeout, stdin=subprocess.DEVNULL, errors="replace", start_new_session=True)
         return res
     except (subprocess.TimeoutExpired, OSError):
@@ -241,7 +242,10 @@ def status(repo):
         _STASH_OK[0] = False
         res = git(repo, "status", "--porcelain=v2", "--branch")
     if not res or res.returncode:
-        err = (res.stderr.strip().splitlines() or ["git did not answer"])[-1] if res else "git did not answer in 15 s"
+        # the cause, not the hint after it (dubious ownership ends with the safe.directory command)
+        lines = res.stderr.strip().splitlines() if res else []
+        err = next((l for l in lines if l.startswith(("fatal:", "error:"))), lines[-1] if lines else "git did not answer") \
+            if res else "git did not answer in 15 s"
         return {"error": err}
     st = {"branch": "", "oid": "", "upstream": "", "ahead": 0, "behind": 0, "stash": 0,
           "staged": 0, "modified": 0, "untracked": 0, "conflicts": 0, "error": "", "gone": False}
@@ -286,7 +290,7 @@ def status(repo):
         except OSError:
             pass
     st["fetched"] = max(stamps) if stamps else None
-    last = git_out(repo, "log", "-1", "--format=%ct%x1f%s%x1f%an").strip().split("\x1f")
+    last = git_out(repo, "log", "-1", "--no-show-signature", "--format=%ct%x1f%s%x1f%an", "--").strip().split("\x1f")
     st["last"] = int(last[0]) if last and last[0].isdigit() else None
     st["subject"] = last[1][:200] if len(last) > 1 else ""      # a message with no blank line is all subject
     st["author"] = last[2] if len(last) > 2 else ""

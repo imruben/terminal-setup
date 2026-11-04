@@ -185,6 +185,7 @@ class Logs(Viewer):
             self.counts = collections.Counter()
             self.last_stamp, self.asleep, self.hidden_at = None, False, None
         self.no_logs, self.new_lines, self.started_at, self.no_docker = "", 0, None, False
+        self.restart_wanted = False                      # (a restart seen for the container you left)
         if not name:
             return
         self.follow_from(["--tail", str(TAIL)])
@@ -194,14 +195,17 @@ class Logs(Viewer):
 
         def check():                                   # in a thread: a slow daemon must not freeze the pane
             running, started, driver = self.state(name)
+            proc = None
             with self.lock:
                 if gen != self.gen:
                     return
                 self.started_at = started
                 if driver == "none":                   # nothing docker logs can read: stop following
                     self.no_logs = "none (no logs kept)"
-            if self.no_logs:
-                self.stop_follow()
+                    proc, self.proc = self.proc, None    # this container's follow, taken under the lock:
+            if proc:                                     # never the next container's
+                proc.kill()
+                proc.wait()
             self.wake()
         threading.Thread(target=check, daemon=True).start()
 
@@ -225,6 +229,7 @@ class Logs(Viewer):
     def follow_on(self):
         """Follow again from the newest line received: docker's --since includes that line,
         so lines up to its stamp are skipped. Newer ones also reach a whole-log read."""
+        self.stop_follow()                               # (never two follows: the old one would block)
         self.follow_from(["--since", self.last_stamp, "--tail", str(BACK_MAX)] if self.last_stamp
                          else ["--tail", str(TAIL)])
 
@@ -249,12 +254,14 @@ class Logs(Viewer):
 
             def check():                                # in a thread, like start()'s
                 running, started, _ = self.state(name)
-                if running and started and started != self.started_at and gen == self.gen:
-                    self.started_at = started
+                if running and started and started != self.started_at:
                     with self.lock:
+                        if gen != self.gen:              # you went to another container meanwhile
+                            return
+                        self.started_at = started
                         self.tail.append((None, STARTED, "", "", None))
                         self.dirty = True
-                    self.restart_wanted = True
+                        self.restart_wanted = True
                     self.wake()
             threading.Thread(target=check, daemon=True).start()
         if getattr(self, "restart_wanted", False):
@@ -275,6 +282,7 @@ class Logs(Viewer):
                 after = None
             with self.lock:
                 if gen != self.gen or proc is not self.proc:
+                    proc.kill()                          # not wanted any more: never left blocked on a full pipe
                     return
                 if e[4]:
                     self.last_stamp = e[4]

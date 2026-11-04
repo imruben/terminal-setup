@@ -15,7 +15,8 @@ tmux_build() {
   run tar -xzf "$tmp/tmux.tar.gz" -C "$tmp"
   info "building (about a minute)…"
   # compiler output goes to a log (shown only if the build fails)
-  local log=${TMPDIR:-/tmp}/terminal-setup-tmux-build.log
+  local log=$LOG_DIR/tmux-build.log
+  mkdir -p "$LOG_DIR"
   run sh -c "cd '$tmp/tmux-$TMUX_VERSION' && ./configure --prefix=/usr/local && make -j\"\$(nproc)\"" >"$log" 2>&1 \
     || { tail -20 "$log" >&2; die "tmux did not build (full log: $log)"; }
   as_root make -C "$tmp/tmux-$TMUX_VERSION" install >>"$log" 2>&1 || die "tmux did not install (log: $log)"

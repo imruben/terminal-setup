@@ -23,7 +23,7 @@ GUIDE=$(cat <<'EOF'
 @@Shortcuts|press Ctrl+a, let go, then the key
 @Everyday|the ones you will use most
 [Ctrl+a] [Space]|Quick menu with the most used actions|@menu
-[Ctrl+a] [?]|This guide|
+[Ctrl+a] [?]  or  [Ctrl+a] [g]|This guide|
 [Ctrl+a] [s]|Switch session · hover previews it, right-click for more|@picker
 [Ctrl+a] [c]|New tab in this folder|new-window -c "#{pane_current_path}"
 [Ctrl+a] [v]|Split side by side|split-window -h -c "#{pane_current_path}"
@@ -52,7 +52,7 @@ click here|Even out the pane sizes|select-layout -E
 click here|Swap with the previous pane|swap-pane -U
 @Sessions|workspaces that keep running in the background
 [Ctrl+a] [N]|New session in this folder|command-prompt -p "New session name:" { new-session -s "%%" -c "#{pane_current_path}" }
-[Ctrl+a] [$]|Rename the session|command-prompt -I "#S" -p "Session name:" { rename-session "%%" }
+[Ctrl+a] [$]|Rename the session · the system monitor keeps its name|@keys:'$'
 [Ctrl+a] [Shift+Tab]|Back to the last session|switch-client -l
 [Ctrl+a] [S]|Session tree · every session and tab, with a live preview|@keys:S
 [Ctrl+a] [X]|Close the session · asks first, then pick another|@keys:X
@@ -138,9 +138,8 @@ type|Filter the list · Esc or a click on ✕ clears it|
 [Middle-click] a tab|Close it · asks first|
 [Right-click] a tab|Tab menu · rename, move, split, close (asks first)|
 [Wheel] on the bar|Previous / next tab|
-[Click] ◀ ▶ on the bar|Rotate through the tabs when they do not all fit (the system monitor's keep their whole names)|
 [Click] CPU / RAM|Go to the system monitor|@keys:M
-[Click] [◀] / [▶]|Previous / next tab · shown when they do not all fit|
+[Click] [◀] / [▶]|Previous / next tab · shown when they do not all fit (the system monitor's keep their whole names)|
 [Click] the session|Switch session|@picker
 [Right-click] the session|Session menu · switch, new, rename, detach, close|
 [Click] [󰍜]|Quick menu|@menu

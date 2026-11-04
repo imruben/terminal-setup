@@ -22,7 +22,7 @@
 # ═══════════════════════════════════════════════════════════════
 set -euo pipefail
 
-REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+REPO=$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 USER=${USER:-$(id -un)}                    # not set in some containers
 # shellcheck source=install/lib.sh
 . "$REPO/install/lib.sh"
@@ -57,15 +57,18 @@ login_shell_zsh() {
   case $current in */zsh) ok "zsh is already your login shell"; return ;; esac
   step "Login shell"
   if ask "Make zsh your login shell? (now: ${current:-unknown})"; then
-    grep -qx "$zsh_path" /etc/shells || as_root sh -c "echo '$zsh_path' >> /etc/shells"
+    grep -qx "$zsh_path" /etc/shells || as_root sh -c "echo '$zsh_path' >> /etc/shells" \
+      || { warn "could not add $zsh_path to /etc/shells: zsh stays out of your login shell"; return 0; }
     as_root chsh -s "$zsh_path" "$USER" || warn "chsh failed: run  chsh -s $zsh_path  yourself"
     ok "zsh from the next login"
   fi
 }
 
-# installed already (both files load the repo): this run also updates everything
+# installed already (both files load the repo, and a full install got as far as the plugins:
+# after `make config` alone the first real install must not start with an apt full-upgrade)
 UPDATE=0
-if [ "$CONFIG_ONLY" = 0 ] && [ "$NO_UPDATE" = 0 ] && has_block "$HOME/.zshrc" && has_block "$HOME/.tmux.conf"; then
+if [ "$CONFIG_ONLY" = 0 ] && [ "$NO_UPDATE" = 0 ] && has_block "$HOME/.zshrc" && has_block "$HOME/.tmux.conf" \
+    && [ -d "$HOME/.tmux/plugins/tpm/.git" ]; then
   UPDATE=1
 fi
 

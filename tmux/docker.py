@@ -202,6 +202,12 @@ class Containers(TableApp):
             got = (ins.stdout.split() if ins else [])
             if len(got) == len(images):
                 arch = dict(zip(images, got))
+            elif ins is not None:
+                # one image gone (or with no Architecture) shifts every answer after it: one by
+                # one then, and the ones without an answer are "?" (not asked again every 2.5 s)
+                for image in images[:30]:
+                    one = docker("image", "inspect", "--format", "{{.Architecture}}", image, timeout=5)
+                    arch[image] = (one.stdout.strip() if one and one.returncode == 0 else "") or "?"
         self.arch_cache.update(arch)
         self.had_rows = bool(found)
         return {"found": found, "info": info}

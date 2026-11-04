@@ -104,7 +104,7 @@ source "$TERMINAL_SETUP/zsh/functions.zsh"
 
 # Plugins
 [ -f ~/.zsh/plugins/fzf-tab/fzf-tab.plugin.zsh ] && source ~/.zsh/plugins/fzf-tab/fzf-tab.plugin.zsh
-(( $+commands[fzf] )) && source <(fzf --zsh)
+(( $+commands[fzf] )) && source <(fzf --zsh 2>/dev/null)   # (an fzf older than 0.48 has no --zsh: nothing)
 (( $+commands[starship] )) && eval "$(starship init zsh)"
 (( $+commands[zoxide] )) && eval "$(zoxide init zsh)"     # z <part of a folder> · zi: pick with fzf
 

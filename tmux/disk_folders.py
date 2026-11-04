@@ -62,10 +62,10 @@ def protected(path):
         if len(parts) >= 4 and parts[3] in ("Users", "Windows", "Program Files", "Program Files (x86)", "ProgramData"):
             return True
     if disksrc.MACOS:
-        data = "/System/Volumes/Data"
-        if path in (data, data + "/Users", data + "/Applications", data + "/Library", data + "/private",
-                    os.path.join(home, "Library"), "/Users", "/Applications", "/Library", "/private", "/opt/homebrew") \
-                or os.path.dirname(path) in ("/Users", data + "/Users"):
+        data = "/System/Volumes/Data"                # the Data volume holds the same tree: /Users/me…
+        bare = path[len(data):] if path.startswith(data + "/") else path   # …is also …/Data/Users/me
+        if path == data or bare in (os.path.join(home, "Library"), "/Users", "/Applications", "/Library", "/private",
+                                    "/opt/homebrew") or os.path.dirname(bare) == "/Users":
             return True
     return False
 
@@ -376,7 +376,9 @@ class Folders(TableApp):
         # by its name, and by the executable bit except on a Windows drive (drvfs marks every file so)
         windows_drive = disksrc.WSL and r["path"].startswith("/mnt/") and len(r["path"].split("/")) > 2 \
             and len(r["path"].split("/")[2]) == 1
-        runs = not r["dir"] and (r["path"].lower().endswith(RUNS) or (os.access(r["path"], os.X_OK) and not windows_drive))
+        name = r["path"].lower()                     # (a .app is a folder, and `open` runs it)
+        runs = name.endswith(".app") if r["dir"] else \
+            name.endswith(RUNS) or (os.access(r["path"], os.X_OK) and not windows_drive)
         if runs and not sure:
             self.confirm(f"{r['name']} is a program: run it with the system's app?", lambda: self.open_app(r, True), r)
             return

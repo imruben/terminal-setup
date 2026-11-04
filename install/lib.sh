@@ -9,6 +9,9 @@ case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;;
 case ":$PATH:" in *":/usr/local/bin:"*) ;; *) PATH="/usr/local/bin:$PATH" ;; esac
 export PATH
 
+# logs of long steps (apt-get, the tmux build), shown only when they fail
+LOG_DIR=${XDG_CACHE_HOME:-$HOME/.cache}/terminal-setup
+
 B=$'\e[1m' D=$'\e[2m' R=$'\e[0m' BLUE=$'\e[34m' GREEN=$'\e[32m' YELLOW=$'\e[33m' RED=$'\e[31m'
 
 step()  { printf '\n%s%s==>%s %s%s\n' "$B" "$BLUE" "$R$B" "$*" "$R"; }

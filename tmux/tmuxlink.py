@@ -35,11 +35,17 @@ def get(option):
     return tmux("show", "-gqv", option).stdout.rstrip("\n")
 
 
+def arg(value):
+    """A value as one tmux argument: a trailing ';' would end the command there (/dir; → /dir)."""
+    value = str(value)
+    return value[:-1] + "\\;" if value.endswith(";") else value
+
+
 def put(option, value):
     if value is None or value == "":
         tmux("set", "-gu", option)
     else:
-        tmux("set", "-g", option, str(value))
+        tmux("set", "-g", option, arg(value))
 
 
 def focus(label):
@@ -172,7 +178,7 @@ def session_for(path):
     """The session name for a folder (terminal.zsh open): its name (. and : become -), or
     parent-name when a session of that name already works in another folder."""
     def clean(n):
-        return re.sub(r"\s+", "-", re.sub(r"[.:]", "-", n.strip())).lstrip("-") or "folder"
+        return re.sub(r"\s+", "-", re.sub(r"[.:#;]", "-", n.strip())).lstrip("-") or "folder"   # as clean_name
     path = path.rstrip("/") or "/"
     name = clean(os.path.basename(path) or "root")
     res = tmux("display", "-p", "-t", f"={name}:", "#{session_path}")

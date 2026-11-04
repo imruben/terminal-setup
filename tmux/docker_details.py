@@ -57,13 +57,13 @@ def when(stamp):
 
 
 SECRET_KEY = re.compile(r"PASS|PWD|_PW\b|^PW\b|SECRET|TOKEN|KEY|PRIVATE|CREDENTIAL|DSN|AUTH|JWT|SALT|COOKIE", re.I)
-URL_PASSWORD = re.compile(r"(\w+://[^:/@\s]+:)(\S+)(@[^@\s]*)")           # the last @ is the host's
+URL_PASSWORD = re.compile(r"(\w+://[^:/@\s]*:)(\S+)(@[^@\s]*)")           # the last @ is the host's
 REDIS_PASSWORD = re.compile(r"(redis-cli\b[^;|&]*?\s-a\s+)(\S+)")      # inside a CMD-SHELL string
 # a password given to a client on its command line: mysql -psecret · mongosh -p s3cret ·
 # redis-server --requirepass x · curl -u user:pw · --password=x
 INLINE = [re.compile(r"(\b(?:mysql|mysqladmin|mysqldump|mariadb)\b[^;|&]*?\s-p)(\S+)"),
           re.compile(r"(\b(?:mongo|mongosh|mongodump|mongorestore)\b[^;|&]*?\s(?:-p|--password)[ =])(\S+)"),
-          re.compile(r"(--(?:requirepass|masterauth|password|pass|token|secret)[ =])(\S+)", re.I),
+          re.compile(r"(--(?!no-)[\w-]*(?:requirepass|masterauth|password|pass|token|secret)[ =])(\S+)", re.I),
           re.compile(r"(\bcurl\b[^;|&]*?\s(?:-u|--user)\s+[^:\s]+:)(\S+)"),
           re.compile(r"(\b[\w.]*(?:password|passwd|pwd|secret|token|api_?key|apikey|auth|credential|private_?key)"
                      r"[\w.]*=)([^\s&;'\",\]]+)", re.I)]
@@ -174,6 +174,16 @@ def mask_secrets(text):
             else:
                 out.append((" " * indent + "•••• (hidden)") if line.strip() else line)
                 continue
+        arr = re.search(r"\[.*\]", line)                # exec form: ["redis-cli", "-a", "pw", "ping"]
+        if arr:
+            try:
+                items = json.loads(arr[0])
+            except ValueError:
+                items = None
+            if isinstance(items, list) and items and all(isinstance(a, str) for a in items):
+                masked = hide_args(items)
+                if masked != items:
+                    line = line[:arr.start()] + json.dumps(masked, ensure_ascii=False) + line[arr.end():]
         m = SECRET_LINE.match(line)
         if m and SECRET_KEY.search(m[2]) and re.fullmatch(r"[|>][-+0-9]*", m[3]):
             out.append(m[1] + m[3])                       # PRIVATE_KEY: | → the next lines are the key

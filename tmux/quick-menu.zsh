@@ -34,7 +34,7 @@ items=(
   '󰏫  Rename tab'                                                        ',' 'command-prompt -I "#W" -p "Tab name:" { rename-window "%%" }'
   '󰉹  Switch session'                                                    's' 'set -gF @popup-client "#{client_name}" ; display-popup -E -e TMUX_IN_POPUP=1 -w 75% -h 70% -b rounded -S "fg=#89b4fa" -d "#{pane_current_path}" -T "#[align=centre,fg=#89b4fa,bold] sessions " "$TERMINAL_SETUP/tmux/terminal.zsh pick"'
   '󰐕  New session'                                                       'N' 'command-prompt -p "New session name:" { new-session -s "%%" -c "#{pane_current_path}" }'
-  '󰏫  Rename session'                                                    '$' 'command-prompt -I "#S" -p "Session name:" { rename-session "%%" }'
+  '󰏫  Rename session'                                                    '$' 'run -C "send-keys -K -c '\''#{client_name}'\'' C-a '\''$'\''"'
   '󰈆  Detach (keeps running)'                                            'd' 'detach-client'
   '-#[fg=#6c7086,bold]TOOLS'                                             '' ''
   '󰍉  Extract text from screen'                                          'e' 'run -C "send-keys -K -c '\''#{client_name}'\'' C-a e"'

@@ -163,7 +163,11 @@ class Cleanup(TableApp):
                 self.flash(f"{it.label}: " + (f"about {human(before)} freed" if before else "cleaned"))
             else:
                 self.flash(f"{it.label}: {(out.strip().splitlines() or ['failed'])[-1][:100]}", ok=False)
-            stamp = disksrc.say_changed(it.path or "")
+            # Docker's items have no folder of their own: where its data lives (with none, every
+            # disk pane would measure again whatever it shows, /mnt/c included)
+            docker_data = os.path.join(disksrc.HOME, "Library/Containers/com.docker.docker") if disksrc.MACOS \
+                else "/var/lib/docker"
+            stamp = disksrc.say_changed(it.path or (docker_data if it.tool == "docker" else ""))
             self.my_stamps.add(stamp)                 # this pane measured it already
         self.background(r, "cleaning", ["sh", "-c", cmd], done, timeout=None)
 

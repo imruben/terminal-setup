@@ -22,7 +22,7 @@ if [[ -z $SSH_AUTH_SOCK || $SSH_AUTH_SOCK == $HOME/.ssh/agent.sock ]]; then
   if (( $? == 2 )); then
     # many shells start at once when tmux restores its sessions: one starts the agent, the
     # others wait for it (else each would delete the socket of the one before)
-    mkdir -p ~/.ssh && : >> ~/.ssh/agent.lock
+    mkdir -p -m 700 ~/.ssh && : >> ~/.ssh/agent.lock
     zmodload zsh/system && zsystem flock -t 5 -f _agent_lock ~/.ssh/agent.lock 2>/dev/null
     ssh-add -l >/dev/null 2>&1
     if (( $? == 2 )); then

@@ -28,7 +28,8 @@ LEVEL_WORDS = {"emergency": "error", "emerg": "error", "alert": "error", "critic
                "debug": "debug", "trace": "debug", "verbose": "debug", "dbg": "debug"}
 REDIS = re.compile(r"^\d+:[A-Z] (\d+ \w{3} \d{4} [\d:.]+) ([.\-*#]) (.*)$")
 REDIS_LEVEL = {".": "debug", "-": "debug", "*": "info", "#": "warning"}
-POSTGRES = re.compile(r"^(\d{4}-\d\d-\d\d [\d:.]+) \w+ \[\d+\]\S* ?(?:\S*@\S* )?(\w+):\s+(.*)$")
+# (no @ before the user@db one: overlapping \S* runs took over a minute on "[1]a@a@a@…")
+POSTGRES = re.compile(r"^(\d{4}-\d\d-\d\d [\d:.]+) \w+ \[\d+\][^\s@]* ?(?:[^\s@]*@\S* )?(\w+):\s+(.*)$")
 BRACKET = re.compile(r"^(\d{4}-\d\d-\d\d[T ][\d:.]+(?:[+-]\d\d:?\d\d|Z)?)\s+\[(\w+)\]\s+(?:<[\d.]+>\s+)?(.*)$")
 SYMFONY = re.compile(r"^\[([^\]]+)\]\s+([\w.-]+)\.([A-Z]+):\s+(.*)$")
 LOGFMT_PAIR = re.compile(r'(\w[\w.]*)=("(?:[^"\\]|\\.)*"|\S+)')

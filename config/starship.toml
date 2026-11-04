@@ -3,14 +3,14 @@
 add_newline = true
 
 format = """
-[](fg:#414868)$username$hostname[](fg:#414868 bg:#7aa2f7)$directory\
-($git_branch$git_status$git_state[ ](bg:#9ece6a)[](fg:#9ece6a)) \
+[](fg:#414868)$username$hostname[](fg:#414868 bg:#7aa2f7)$directory\
+($git_branch$git_status$git_state[ ](bg:#9ece6a)[](fg:#9ece6a)) \
 $fill\
 $status$cmd_duration$jobs$docker_context$php$nodejs$python$golang$rust$localip$time
 $character"""
 
 [fill]
-symbol = ""
+symbol = " "
 style = "bright-black"
 
 [username]
@@ -32,9 +32,9 @@ read_only = " 󰌾"
 read_only_style = "bg:#7aa2f7 fg:#f7768e"
 truncation_length = 10
 truncate_to_repo = false
-truncation_symbol = ""
-format = "[ 󰉋 $path ]($style)[$read_only]($read_only_style)[](fg:#7aa2f7)"
-repo_root_format = "[ 󰉋 $before_root_path]($before_repo_root_style)[$repo_root]($repo_root_style)[$path ]($style)[$read_only]($read_only_style)[](fg:#7aa2f7 bg:#9ece6a)"
+truncation_symbol = "…/"
+format = "[ 󰉋 $path ]($style)[$read_only]($read_only_style)[](fg:#7aa2f7)"
+repo_root_format = "[ 󰉋 $before_root_path]($before_repo_root_style)[$repo_root]($repo_root_style)[$path ]($style)[$read_only]($read_only_style)[](fg:#7aa2f7 bg:#9ece6a)"
 
 [git_branch]
 symbol = "󰊢 "

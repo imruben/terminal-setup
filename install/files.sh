@@ -8,7 +8,7 @@
 #  so some may have been there before it.
 # ═══════════════════════════════════════════════════════════════
 
-REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+REPO=$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 . "$REPO/install/lib.sh"
 . "$REPO/install/config.sh"
 detect_platform
@@ -84,10 +84,14 @@ while read -r name _; do
 done < <(grep -v '^#' "$REPO/install/plugins.lock")
 
 group "Programs outside the package manager" "when the system's own version is missing or too old"
-file /usr/local/bin/tmux "tmux built from source (Ubuntu 24.04: its tmux is older than 3.6)"
+# (on an Intel Mac /usr/local/bin/tmux is Homebrew's)
+[ "$OS" = macos ] || file /usr/local/bin/tmux "tmux built from source (Ubuntu 24.04: its tmux is older than 3.6)"
 file "$HOME/.local/bin/fzf" "fzf official binary (when Ubuntu's is older than 0.48)"
 file "$HOME/.local/bin/starship" "the prompt, official installer (when Ubuntu has no starship)"
+file "$HOME/.local/bin/lazygit" "lazygit official binary (when Ubuntu has no lazygit)"
+file "$HOME/.local/bin/yq" "yq official binary (mikefarah's: Ubuntu's yq is another program)"
 file "$HOME/.local/bin/bat" "a link to batcat: Ubuntu calls bat \"batcat\""
+file "$HOME/.local/bin/fd" "a link to fdfind: Ubuntu calls fd \"fdfind\""
 if [ "$OS" = macos ]; then
   file "$HOME/.terminfo" "tmux-256color terminal description (macOS lacks it)"
 elif [ "$IS_WSL" = 1 ]; then

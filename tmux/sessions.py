@@ -63,27 +63,29 @@ def write_start(name, folder=""):
 def read_descriptions():
     out = {}
     try:
-        with open(DESCRIPTIONS, encoding="utf-8") as f:
+        with open(DESCRIPTIONS, encoding="utf-8", errors="replace") as f:
             for line in f:
                 name, _, text = line.rstrip("\n").partition("\t")
                 if name and text:
                     out[name] = text
-    except FileNotFoundError:
+    except OSError:                                  # none yet, or unreadable: no descriptions
         pass
     return out
 
 
 def write_descriptions(d):
-    with open(DESCRIPTIONS, "w", encoding="utf-8") as f:
+    """Written whole and then moved into place: a picker closed halfway never leaves half a file."""
+    tmp = f"{DESCRIPTIONS}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         for name in sorted(d):
             f.write(f"{name}\t{d[name]}\n")
+    os.replace(tmp, DESCRIPTIONS)
 TOP = 3            # first list row on screen (1-based)
 WHEEL_STEP = 3
 HOME = os.path.expanduser("~")
 
 
-def tmux(*args):
-    return subprocess.run(["tmux", *args], capture_output=True, text=True)
+tmux = tmuxlink.tmux          # (a stuck server answers nothing after 5 s: the picker never freezes)
 
 
 def session_of(client):
@@ -100,8 +102,9 @@ def tilde(path):
 
 
 def clean_name(name):
-    """tmux does not allow '.' or ':' in session names (a leading '-' would read as an option)."""
-    return re.sub(r"\s+", "-", re.sub(r"[.:]", "-", name.strip())).lstrip("-")
+    """tmux does not allow '.' or ':' in session names (a leading '-' would read as an option),
+    expands # in them (is#Sue → isue) and ends a command at a trailing ';'."""
+    return re.sub(r"\s+", "-", re.sub(r"[.:#;]", "-", name.strip())).lstrip("-")
 
 
 class Picker:
@@ -135,7 +138,7 @@ class Picker:
         for s in self.sessions:
             if not s[4] and s[0] in saved:
                 s[4] = saved[s[0]]
-                tmux("set", "-t", f"{s[0]}:", "@description", s[4])
+                tmux("set", "-t", f"{s[0]}:", "@description", tmuxlink.arg(s[4]))
         self.filter(keep_cursor=True)
 
     def filter(self, keep_cursor=False):
@@ -438,7 +441,7 @@ class Picker:
         d = read_descriptions()
         if text:
             d[name] = text
-            tmux("set", "-t", f"{name}:", "@description", text)
+            tmux("set", "-t", f"{name}:", "@description", tmuxlink.arg(text))
         else:
             d.pop(name, None)
             tmux("set", "-u", "-t", f"{name}:", "@description")

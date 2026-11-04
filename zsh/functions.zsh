@@ -542,7 +542,7 @@ rgf() {
       --preview 'bat --color=always --style=numbers --highlight-line {2} {1}' \
       --preview-window 'right,60%,+{2}+3/3,~3') || return
   local file=${sel%%:*} rest=${sel#*:}
-  ${EDITOR:-micro} "+${rest%%:*}" "$file"
+  ${=EDITOR:-micro} "+${rest%%:*}" "$file"      # (= : EDITOR="code --wait" is a command and its option)
 }
 
 # fe [pattern]: pick files by name (Tab marks several) and open them in the editor
@@ -550,7 +550,7 @@ fe() {
   local -a files
   files=("${(@f)$(fd --type f --hidden --exclude .git "$@" |
     fzf -m --preview 'bat -n --color=always --line-range :200 {}')}")
-  (( $#files )) && [[ -n $files[1] ]] && ${EDITOR:-micro} "${files[@]}"
+  (( $#files )) && [[ -n $files[1] ]] && ${=EDITOR:-micro} "${files[@]}"
 }
 
 # mkcd <dir>: create a folder (and its parents) and go into it
@@ -559,16 +559,22 @@ mkcd() { [[ -n $1 ]] || { echo "usage: mkcd <dir>"; return 1 }; mkdir -p -- "$1"
 # extract <file>…: unpack any archive into the current folder
 extract() {
   (( $# )) || { echo "usage: extract <file>…"; return 1 }
-  local f
+  local f out
   for f in "$@"; do
     [[ -f $f ]] || { echo "extract: $f: no such file"; return 1 }
+    # a single compressed file (x.gz) → ./x: here, not next to the archive (gunzip -k would
+    # write ~/Downloads/x), and never over a file that is already here
+    out=${${f:t}%.*}
+    if [[ ${f:l} != *.tar.* && ${f:l} == *.(gz|xz|bz2|zst) && -e $out ]]; then
+      echo "extract: $out is already here"; return 1
+    fi
     case ${f:l} in
       *.tar|*.tar.*|*.tgz|*.tbz2|*.txz|*.tzst) tar -xf "$f" ;;   # tar works out the compression
       *.zip|*.jar|*.whl) unzip -q "$f" ;;
-      *.gz)  gunzip -k "$f" ;;
-      *.xz)  unxz -k "$f" ;;
-      *.bz2) bunzip2 -k "$f" ;;
-      *.zst) zstd -dq "$f" ;;
+      *.gz)  gunzip -c "$f" > "$out" || { rm -f -- "$out"; false } ;;
+      *.xz)  unxz -c "$f" > "$out" || { rm -f -- "$out"; false } ;;
+      *.bz2) bunzip2 -c "$f" > "$out" || { rm -f -- "$out"; false } ;;
+      *.zst) zstd -dcq "$f" > "$out" || { rm -f -- "$out"; false } ;;
       *.7z)  7z x "$f" ;;
       *.rar) unrar x "$f" ;;
       *) echo "extract: $f: unknown archive type"; return 1 ;;

@@ -168,7 +168,7 @@ class Repo(BackgroundViewer):
         it never rewrites the index, so it never gets in the way of your own git add / commit."""
         # no commits yet: compare with an empty tree (its id depends on the hash: SHA-1 or SHA-256)
         base = "HEAD" if head_exists(repo) else (git_out(repo, "hash-object", "-t", "tree", "/dev/null").strip() or EMPTY_TREE)
-        stat = git_out(repo, "diff-index", "--color=always", f"--stat={max(40, width - 4)}", base).rstrip("\n")
+        stat = git_out(repo, "diff-index", "--color=always", f"--stat={max(40, width - 4)}", base, "--").rstrip("\n")
         if not stat:
             untracked = sum(1 for l in git_out(repo, "status", "--porcelain=v1").splitlines() if l.startswith("??"))
             return [f"  {GREEN}No changes to tracked files"] + \
@@ -176,7 +176,7 @@ class Repo(BackgroundViewer):
         lines = [f"  {line}" for line in stat.splitlines()] + [""]
         body = []
         if DELTA:
-            raw = git_out(repo, "diff-index", "-p", "--no-color", base, timeout=30)
+            raw = git_out(repo, "diff-index", "-p", "--no-color", base, "--", timeout=30)
             text = "\n".join(raw.splitlines()[:MAX_LINES * 2])      # delta gets no more than is shown
             if text:
                 try:
@@ -186,7 +186,7 @@ class Repo(BackgroundViewer):
                 except (subprocess.TimeoutExpired, OSError):
                     body = []
         if not body:
-            body = git_out(repo, "diff-index", "-p", "--color=always", base, timeout=30).splitlines()
+            body = git_out(repo, "diff-index", "-p", "--color=always", base, "--", timeout=30).splitlines()
         if len(body) > MAX_LINES:
             body = body[:MAX_LINES] + [f"{YELLOW}… {len(body) - MAX_LINES} more lines: see the whole diff in a terminal"]
         return lines + body
@@ -198,8 +198,8 @@ class Repo(BackgroundViewer):
         revs = ["HEAD"]
         if git_out(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}").strip():
             revs.append("@{upstream}")
-        out = git_out(repo, "log", "--graph", "--color=always", "--date=relative", "-n", "200",
-                      "--format=%C(yellow)%h%C(reset) %s %C(dim)· %ad · %an%C(reset)%C(auto)%d", *revs, timeout=30)
+        out = git_out(repo, "log", "--graph", "--no-show-signature", "--color=always", "--date=relative", "-n", "200",
+                      "--format=%C(yellow)%h%C(reset) %s %C(dim)· %ad · %an%C(reset)%C(auto)%d", *revs, "--", timeout=30)
         return [f" {line}" for line in out.splitlines()] or [f"  {DIM}no commits yet"]
 
     # ─── Branches ───
