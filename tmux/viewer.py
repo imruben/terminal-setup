@@ -20,7 +20,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import tmuxlink
 from tui import (ACCENT, ANSI, BOLD, CRUST, DIM, GREEN, HOVER, RESET, SUB, SURFACE, TEXT, THUMB, TRACK, YELLOW,
-                 Menu, Screen, bg, cut, ellipsis, vlen, wrap)
+                 Menu, Screen, bg, cut, ellipsis, keep_bg, vlen, wrap)
 
 ACTIVE_TAB = bg("#89b4fa") + CRUST + BOLD
 SELECTED = bg("#585b70")
@@ -171,7 +171,7 @@ class Viewer:
             if not self.key and n == 1:
                 line = f"  {DIM}{self.empty}"
             if self.sel and self.sel[0] <= i <= self.sel[1] and i < len(self.lines):
-                line = SELECTED + cut(line, text_w).replace(RESET, RESET + SELECTED) + " " * max(0, text_w - vlen(cut(line, text_w))) + RESET
+                line = SELECTED + keep_bg(cut(line, text_w), SELECTED) + " " * max(0, text_w - vlen(cut(line, text_w))) + RESET
             else:
                 line = cut(line, text_w)
             if bar:

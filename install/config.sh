@@ -22,6 +22,9 @@ COPIES="
 config/btop/btop.conf      .config/btop/btop.conf
 config/micro/settings.json .config/micro/settings.json
 "
+# the ones the install copied itself (one per line): uninstall.sh removes only those, never a
+# file you already had, even when it is the same as the repo's
+COPIED_LIST="$HOME/.tmux/terminal-setup-copies"
 
 block_zsh() {
   printf '%s\n' "$MARK_BEGIN  (./uninstall.sh takes it out)" \
@@ -150,6 +153,7 @@ configure() {
   add_block "$HOME/.tmux.conf" "$(block_tmux)"
   add_block "$HOME/.zshenv" "$(block_zshenv)"
   run mkdir -p "$HOME/.tmux/plugins"
+  [ "${DRY_RUN:-0}" = 1 ] || touch "$COPIED_LIST"
   local src dst
   while read -r src dst; do
     [ -n "$src" ] || continue
@@ -160,6 +164,9 @@ configure() {
     fi
     run mkdir -p "$(dirname "$HOME/$dst")"
     run cp "$REPO/$src" "$HOME/$dst"
+    if [ "${DRY_RUN:-0}" != 1 ] && ! grep -qxF "$dst" "$COPIED_LIST" 2>/dev/null; then
+      printf '%s\n' "$dst" >> "$COPIED_LIST"
+    fi
     ok "~/$dst (copied from the repo: from now on it is yours)"
   done <<< "$COPIES"
 }

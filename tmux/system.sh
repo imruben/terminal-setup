@@ -104,7 +104,17 @@ build() {
   tmux set-hook -w -t "$S:disk" window-resized "run-shell -b '$D/disk-fit.sh $disks'" \
      \; set -w -t "$S:disk" @fit-cmd "$D/disk-fit.sh $disks"
   tmux set -t "$S:" @description "System · info, processes & ports, disk, packages, ssh, docker, git"
+  note_panes
   tmux select-window -t "$S:info" \; select-pane -t "$info"
+}
+
+# How many panes each monitor tab has, in its @panes: the layout hook (tmux.conf) only runs a
+# repair when that number changes (a pane closed), not on every border dragged · a pane of your
+# own split into a tab is counted on the next look, so it costs one repair, not one per drag
+note_panes() {
+  local w n has
+  tmux list-windows -t "=$S" -F '#{window_id} #{window_panes} #{?#{@icon},1,0}' 2>/dev/null |
+    while read -r w n has; do [[ $has == 1 ]] && tmux set -w -t "$w" @panes "$n"; done
 }
 
 # Every labelled pane must be there (extra tabs of your own are fine); anything missing
@@ -144,7 +154,7 @@ locked() {   # $1: seconds to wait (0: give up at once), then the command
 
 ensure_now() {
   if tmux has-session -t "=$S" 2>/dev/null; then
-    healthy && return 0
+    healthy && { note_panes; return 0; }
     # broken (a pane was closed, or an old save brought it back without its programs):
     # build a fresh copy next to it, then swap names · you stay on the tab you were on
     local was; was=$(tmux display -p -t "$S:" '#W' 2>/dev/null)

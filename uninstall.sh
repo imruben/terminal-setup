@@ -24,8 +24,11 @@ printf '\n%sterminal-setup · uninstall%s\n' "$B" "$R"
 step "Plan"
 blocks="" copies="" links=$(links_into_repo)
 for f in .zshrc .tmux.conf .zshenv; do has_block "$HOME/$f" && { check_marks "$HOME/$f"; blocks="$blocks $f"; }; done
+# the settings the install copied (and you have not changed since) · an install from before
+# that list existed: every one that is still the repo's
+copied() { if [ -f "$COPIED_LIST" ]; then grep -qxF "$1" "$COPIED_LIST"; else true; fi; }
 while read -r src dst; do
-  [ -n "$src" ] && [ ! -L "$HOME/$dst" ] && cmp -s "$REPO/$src" "$HOME/$dst" && copies="$copies $dst"
+  [ -n "$src" ] && [ ! -L "$HOME/$dst" ] && cmp -s "$REPO/$src" "$HOME/$dst" && copied "$dst" && copies="$copies $dst"
 done <<< "$COPIES"
 [ -n "$blocks" ] && info "take the terminal-setup lines out of:$(printf ' ~/%s' $blocks)"
 [ -n "$copies" ] && info "remove the copied settings:$(printf ' ~/%s' $copies)"
@@ -45,6 +48,7 @@ for f in $blocks; do
   rm -f "$HOME/$f.tmp"
 done
 for f in $copies; do rm "$HOME/$f"; ok "removed ~/$f"; done
+rm -f "$COPIED_LIST"
 
 # ─── an install from before: links into the repo, the old files in a backup ───
 if [ -n "$links" ]; then

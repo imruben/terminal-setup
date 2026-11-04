@@ -7,8 +7,10 @@
 #      narrower    about half each, but btop never under its 50-col minimum while
 #                  fastfetch keeps 25 (at 80 cols: fastfetch 29 · btop 50)
 #  · btop is restarted only when the boxes that fit change (btop.sh picks them)
-# info-fit.sh <resources pane> <btop pane> <rows for resources>
+# info-fit.sh <resources pane> <btop pane> <rows for resources (a guess until it says)>
 res=$1 btop=$2 rows=$3
+# the rows Resources found it needs (resources.sh notes them in @rows), else the guess
+fit=$(tmux show -pqv -t "$res" @rows 2>/dev/null); [[ $fit =~ ^[0-9]+$ ]] && rows=$fit
 # zoomed: resizing a pane would undo the zoom (tmux unzooms on resize-pane): the next resize fits it
 [[ $(tmux display -p -t "$1" '#{window_zoomed_flag}' 2>/dev/null) == 1 ]] && exit 0
 W=$(tmux display -p -t "$btop" '#{window_width}' 2>/dev/null) || exit 0

@@ -149,6 +149,8 @@ def wrap(line, width, indent="  "):
                 # the continuation keeps the colour the line had where it was cut
                 cur = [indent, colour_at(cur[:cut_at + 1])] + rest
                 vis = len(indent) + sum(vlen(t) for t in rest if not ANSI.fullmatch(t))
+                start = len(indent)
+                continue                              # this character again: it may still not fit (a wide one)
             else:
                 out.append("".join(cur))
                 cur, vis = [indent, colour_at(cur)], len(indent)      # continuation lines are indented
@@ -163,10 +165,36 @@ def wrap(line, width, indent="  "):
     return out
 
 
+SGR = re.compile(r"\x1b\[([0-9;:]*)m")
+
+
+def _drops_bg(params):
+    r"""Does this SGR take the background away: a reset (\e[m, \e[0m, \e[1;0;31m) or 49 · the
+    numbers inside 38;5;0 / 38;2;r;g;b are colours, not resets."""
+    if params == "":
+        return True
+    ps, i = params.replace(":", ";").split(";"), 0
+    while i < len(ps):
+        p = ps[i]
+        if p in ("38", "48", "58"):                  # extended colour: skip its arguments
+            i += 3 if i + 1 < len(ps) and ps[i + 1] == "5" else 5
+            continue
+        if p in ("", "0", "00", "49"):
+            return True
+        i += 1
+    return False
+
+
+def keep_bg(text, background):
+    r"""text with `background` put back after every code that would take it away (the colours
+    of capture-pane, container logs and git use \e[m and \e[49m, not only \e[0m)."""
+    return SGR.sub(lambda m: m[0] + background if _drops_bg(m[1]) else m[0], text)
+
+
 def highlight(line, width):
     """Paint a whole row with the hover background (colours inside keep working)."""
     body = cut(line, width)
-    return HOVER + body.replace(RESET, RESET + HOVER) + " " * max(0, width - vlen(body)) + RESET
+    return HOVER + keep_bg(body, HOVER) + " " * max(0, width - vlen(body)) + RESET
 
 
 # ─── context menu (looks like tmux's own menus) ───

@@ -212,6 +212,7 @@ class Measure:
     def __init__(self, root, on_progress):
         self.root, self.on_progress = root, on_progress
         self.sizes, self.unreadable = {}, set()
+        self.short = set()                       # those folders and every folder above them: partial() asks it
         self.done, self.cancelled, self.count = False, False, 0
         self.started, self.finished = time.time(), None
         self.proc = None
@@ -252,6 +253,13 @@ class Measure:
                  or re.match(r"du: (.+?): ", line))                                       # BSD
             if m:
                 self.unreadable.add(m[1])
+                p = m[1].rstrip("/") or "/"
+                while p not in self.short:
+                    self.short.add(p)
+                    up = os.path.dirname(p)
+                    if up == p:
+                        break
+                    p = up
 
     def cancel(self):
         self.cancelled = True
@@ -267,8 +275,7 @@ class Measure:
 
     def partial(self, path):
         """Some folder at or under path could not be read: its size is a lower bound."""
-        pre = path.rstrip("/") + "/"
-        return any(u == path or u.startswith(pre) for u in tuple(self.unreadable))   # du adds to it meanwhile
+        return (path.rstrip("/") or "/") in self.short    # (one look, not a walk over every unreadable one per row)
 
 
 # ─── Cleanup ───

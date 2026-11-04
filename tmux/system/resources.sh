@@ -260,6 +260,13 @@ while :; do
   done
   printf '\e[J'
   zoom_button
+  # the pane as tall as what it shows (swap, a GPU, how many disks: it depends on the machine,
+  # system.sh only guesses): noted in @rows, which info-fit.sh keeps on resizes · only when the
+  # number changes, and never while zoomed (a resize would undo the zoom)
+  if [[ -n $TMUX_PANE && $zoomed == 0 && ${#out[@]} != "${fit_rows:-}" ]]; then
+    fit_rows=${#out[@]}
+    tmux set -p -t "$TMUX_PANE" @rows "$fit_rows" \; resize-pane -t "$TMUX_PANE" -y "$fit_rows" 2>/dev/null
+  fi
   first=0
   sleep 2 & wait $!; kill $! 2>/dev/null
 done

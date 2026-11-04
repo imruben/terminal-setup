@@ -31,6 +31,17 @@ apt_get() {
   "$@" >"$APT_LOG" 2>&1 || { tail -20 "$APT_LOG" >&2; die "apt-get failed (full log: $APT_LOG)"; }
 }
 
+# apt-get update: one broken third-party repository (a PPA gone, a key expired) makes it fail
+# even when Ubuntu's own lists came in: a warning, and the install goes on with what it has
+apt_update() {
+  if [ "${DRY_RUN:-0}" = 1 ]; then run apt-get update; return; fi
+  mkdir -p "$LOG_DIR"
+  if [ "$(id -u)" = 0 ]; then set -- apt-get -q update; else set -- sudo apt-get -q update; fi
+  "$@" >"$APT_LOG" 2>&1 && return 0
+  { grep -E '^(E|W):' "$APT_LOG" || tail -5 "$APT_LOG"; } | tail -5 >&2 || true
+  warn "apt-get update had errors (full log: $APT_LOG): going on with the lists there are"
+}
+
 apt_candidate() { apt-cache policy "$1" 2>/dev/null | awk '/Candidate:/ {print $2}' | sed 's/(none)//; s/^[0-9]*://'; }
 apt_installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q " installed$"; }
 
@@ -46,7 +57,7 @@ apt_lists_recent()  {
 apt_refresh_lists() {
   apt_has_lists && return
   info "no package lists yet: fetching them first to plan (apt-get update, asks for your password)…"
-  apt_get update
+  apt_update
 }
 
 apt_plan() {
@@ -94,7 +105,7 @@ apt_install() {
   # too): old lists point at .debs the mirror no longer has
   if { [ -n "$APT_MISSING" ] || [ "$NEED_TMUX_BUILD" = 1 ] || [ "$NEED_FASTFETCH" = 1 ]; } && ! apt_lists_recent; then
     info "refreshing the package lists (apt-get update)…"
-    apt_get update
+    apt_update
   fi
   case "$APT_MISSING$NEED_TMUX_BUILD$NEED_FZF$NEED_FASTFETCH$NEED_STARSHIP$NEED_LAZYGIT$NEED_YQ" in
     000000) ok "nothing to install: every package is there" ;;
@@ -113,16 +124,16 @@ apt_install() {
     tmux_build
   fi
   if [ "$NEED_FZF" = 1 ]; then
-    run curl -fsSL -o "$tmp/fzf.tgz" \
-      "https://github.com/junegunn/fzf/releases/download/v$FZF_VERSION/fzf-$FZF_VERSION-linux_$ARCH.tar.gz"
+    download "https://github.com/junegunn/fzf/releases/download/v$FZF_VERSION/fzf-$FZF_VERSION-linux_$ARCH.tar.gz" \
+      "$tmp/fzf.tgz" "fzf_$ARCH"
     run mkdir -p ~/.local/bin
     run tar -xzf "$tmp/fzf.tgz" -C ~/.local/bin fzf
     ok "fzf $FZF_VERSION in ~/.local/bin"
   fi
   if [ "$NEED_FASTFETCH" = 1 ]; then
     local ffarch=$ARCH; [ "$ARCH" = arm64 ] && ffarch=aarch64
-    run curl -fsSL -o "$tmp/fastfetch.deb" \
-      "https://github.com/fastfetch-cli/fastfetch/releases/download/$FASTFETCH_VERSION/fastfetch-linux-$ffarch.deb"
+    download "https://github.com/fastfetch-cli/fastfetch/releases/download/$FASTFETCH_VERSION/fastfetch-linux-$ffarch.deb" \
+      "$tmp/fastfetch.deb" "fastfetch_$ARCH"
     apt_get install "$tmp/fastfetch.deb"
     ok "fastfetch $FASTFETCH_VERSION"
   fi
@@ -135,15 +146,15 @@ apt_install() {
   fi
   if [ "$NEED_LAZYGIT" = 1 ]; then
     local lgarch=x86_64; [ "$ARCH" = arm64 ] && lgarch=arm64
-    run curl -fsSL -o "$tmp/lazygit.tgz" \
-      "https://github.com/jesseduffield/lazygit/releases/download/v$LAZYGIT_VERSION/lazygit_${LAZYGIT_VERSION}_linux_$lgarch.tar.gz"
+    download "https://github.com/jesseduffield/lazygit/releases/download/v$LAZYGIT_VERSION/lazygit_${LAZYGIT_VERSION}_linux_$lgarch.tar.gz" \
+      "$tmp/lazygit.tgz" "lazygit_$ARCH"
     run mkdir -p ~/.local/bin
     run tar -xzf "$tmp/lazygit.tgz" -C ~/.local/bin lazygit
     ok "lazygit $LAZYGIT_VERSION in ~/.local/bin"
   fi
   if [ "$NEED_YQ" = 1 ]; then
     run mkdir -p ~/.local/bin
-    run curl -fsSL -o "$tmp/yq" "https://github.com/mikefarah/yq/releases/download/v$YQ_VERSION/yq_linux_$ARCH"
+    download "https://github.com/mikefarah/yq/releases/download/v$YQ_VERSION/yq_linux_$ARCH" "$tmp/yq" "yq_$ARCH"
     run install -m 755 "$tmp/yq" ~/.local/bin/yq
     ok "yq $YQ_VERSION in ~/.local/bin"
   fi

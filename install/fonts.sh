@@ -15,8 +15,10 @@ font_present_linux() { grep -qi "JetBrainsMono Nerd Font" <<< "$(fc-list 2>/dev/
 font_present_macos() { grep -qi "JetBrainsMonoNerdFont" <<< "$(printf '%s\n' ~/Library/Fonts/* /Library/Fonts/*)"; }
 
 font_present_windows() {
-  local d
-  for d in /mnt/c/Windows/Fonts /mnt/c/Users/*/AppData/Local/Microsoft/Windows/Fonts; do
+  local d c
+  # C: wherever WSL mounts it (/mnt/c, or another automount root in /etc/wsl.conf)
+  c=$(wslpath -u 'C:\' 2>/dev/null); c=${c%/}; c=${c:-/mnt/c}
+  for d in "$c"/Windows/Fonts "$c"/Users/*/AppData/Local/Microsoft/Windows/Fonts; do
     grep -qi "JetBrainsMonoNerdFont" <<< "$(printf '%s\n' "$d"/*)" && return 0
   done
   return 1
@@ -46,8 +48,8 @@ font_install() {
   step "JetBrainsMono Nerd Font"
   local tmp
   tmp=$(mktemp -d)
-  run curl -fsSL -o "$tmp/font.zip" \
-    "https://github.com/ryanoasis/nerd-fonts/releases/download/$NERD_FONT_VERSION/$NERD_FONT.zip"
+  download "https://github.com/ryanoasis/nerd-fonts/releases/download/$NERD_FONT_VERSION/$NERD_FONT.zip" \
+    "$tmp/font.zip" font
   run mkdir -p ~/.local/share/fonts/JetBrainsMonoNerdFont
   run unzip -oq "$tmp/font.zip" '*.ttf' -d ~/.local/share/fonts/JetBrainsMonoNerdFont
   run fc-cache -f

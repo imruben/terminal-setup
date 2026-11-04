@@ -131,7 +131,9 @@ class Hosts(TableApp):
         extra_cfgs = self.bg.get_for(("reading", "history"), (stamp, tuple(sorted(opts.items()))),
                                      lambda: self.resolve_all(extra_list, opts), 300) or {}
         cfgs = {**cfgs, **extra_cfgs}
-        live = sshsrc.live()
+        # ps and ssh-add in the background: a slow agent (Windows' bridge on WSL, 1Password…) or a
+        # busy machine must not freeze the pane (both are asked every 3 s on screen)
+        live = self.bg.get(("live",), sshsrc.live, 3) or {}
         # who answers (every 30 s) · which account the git hosts see for your key (every hour)
         targets = {}
         for d in aliases + extra_list:
@@ -144,7 +146,8 @@ class Hosts(TableApp):
         probes = self.bg.get_for(("checking",), seen | now_t, lambda: self.probe_all(targets), PROBE_EVERY,
                                  again=not now_t <= seen) or {}
         # a key with a passphrase that the agent does not hold cannot be used without a terminal
-        held, _ = sshsrc.agent_keys()
+        agent = self.bg.get(("agent",), sshsrc.agent_keys, 3)
+        held = agent[0] if isinstance(agent, tuple) else {}
         by_path = {k["path"]: k for k in sshsrc.keys()}
 
         def locked(c):
@@ -378,6 +381,7 @@ class Hosts(TableApp):
         def done(result):
             rc, out, err = result
             if rc == 0:
+                self.bg.forget(("live",))                # the new tunnel shows at once
                 self.flash(f"localhost:{local} → {r['alias']}:{remote} · right-click → Close the tunnel to stop it")
             else:
                 busy = "Address already in use" in err or "cannot listen" in err
@@ -398,6 +402,7 @@ class Hosts(TableApp):
             self.flash(f"tunnel to {r['alias']} closed")
         except OSError as e:
             self.flash(f"could not close it: {e.strerror}", ok=False)
+        self.bg.forget(("live",))
         self.reload()
 
     def copy_id(self, r):

@@ -11,7 +11,9 @@ _maint_step() {
 update() {
   local -a _maint_failed
   (( $+commands[apt-get] )) && \
-    _maint_step "apt" eval 'sudo apt update && sudo apt full-upgrade -y && sudo apt autoremove --purge -y'
+    # a config file you changed that a new version also changes: yours stays (the new one as
+    # .dpkg-dist), never a question that would stop an unattended update (make install YES=1)
+    _maint_step "apt" eval 'sudo apt update && sudo env DEBIAN_FRONTEND=noninteractive apt full-upgrade -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold && sudo apt autoremove --purge -y'
   (( $+commands[snap] )) && _maint_step "snap" sudo snap refresh
   (( $+commands[brew] )) && _maint_step "brew" eval 'brew update && brew upgrade'
   # installed with their own installers (Homebrew's copies are updated by brew above)

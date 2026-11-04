@@ -107,10 +107,17 @@ start_cmd() {
   esac
 }
 
-# a closed session's description must not pass to a new session with the same name
+# a closed session's description must not pass to a new session with the same name ·
+# every closed session forgets its own (the session-closed hook: kill-all closes several at
+# once, so one at a time, each with its own temp file)
 forget_description() {
-  local f=~/.tmux/descriptions.tsv
-  [[ -f $f ]] && awk -F'\t' -v n="$1" '$1 != n' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  local f=~/.tmux/descriptions.tsv fd
+  [[ -f $f ]] || return 0
+  : >> "$f.lock"                                   # (zsystem flock only locks a file that is there)
+  zmodload -F zsh/system b:zsystem 2>/dev/null && zsystem flock -t 5 -f fd "$f.lock" 2>/dev/null
+  awk -F'\t' -v n="$1" '$1 != n' "$f" > "$f.$$.tmp" && mv "$f.$$.tmp" "$f"
+  [[ -n $fd ]] && zsystem flock -u $fd
+  return 0
 }
 
 # rename_session <old> <new>: also moves its description (picker → Describe…). The system
@@ -403,6 +410,9 @@ case "$1" in
                     [[ -f $f ]] && awk -F'\t' -v o="$old" -v n="$new" 'BEGIN { OFS = FS } $1 == o { $1 = n } { print }' "$f" > "$f.tmp" \
                       && mv "$f.tmp" "$f" ;;
   help|h|-h|--help) help ;;
+  # a session closed (any way: Ctrl+a X, its last tab or shell, the session tree…) · not at
+  # kill-server or when tmux itself is ended: no hook runs then, and the descriptions come back
+  _closed)          [[ -n $2 ]] && forget_description "$2" ;;
   _preview)         preview "$2" "$3" ;;
   _names)           session_names ;;                 # for zsh completion
   *)                fail "unknown command: $1"; help; exit 1 ;;

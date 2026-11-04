@@ -56,7 +56,9 @@ class Keys(TableApp):
         return out
 
     def fetch(self):
-        loaded, self.problem = sshsrc.agent_keys()
+        # ssh-add -l in the background: a slow agent (Windows' bridge on WSL…) must not freeze the pane
+        agent = self.bg.get(("agent",), sshsrc.agent_keys, 3)
+        loaded, self.problem = agent if isinstance(agent, tuple) else ({}, "")
         users = self.bg.get_for(("reading",), sshsrc.config_stamp(), self.users, 300) or {}
         found = list(sshsrc.keys())
         have = {k["path"] for k in found}
@@ -157,6 +159,7 @@ class Keys(TableApp):
             return
         rc, out, err = sshsrc.run(["ssh-add", r["path"]], timeout=10)      # no passphrase: no popup needed
         self.flash(f"{r['name']} is in the agent" if rc == 0 else f"ssh-add: {(err or out).strip()[:80]}", ok=rc == 0)
+        self.bg.forget(("agent",))
         self.reload()
 
     def add_all(self, rows):
@@ -167,6 +170,7 @@ class Keys(TableApp):
         target = r["pub"] or r["path"]
         rc, out, err = sshsrc.run(["ssh-add", "-d", target], timeout=10)
         self.flash(f"{r['name']} is out of the agent" if rc == 0 else f"ssh-add -d: {(err or out).strip()[:80]}", ok=rc == 0)
+        self.bg.forget(("agent",))
         self.reload()
 
     def ask_new(self):

@@ -10,8 +10,8 @@ tmux_build() {
   apt_get install build-essential pkg-config bison libevent-dev libncurses-dev
   local tmp
   tmp=$(mktemp -d)
-  run curl -fsSL -o "$tmp/tmux.tar.gz" \
-    "https://github.com/tmux/tmux/releases/download/$TMUX_VERSION/tmux-$TMUX_VERSION.tar.gz"
+  download "https://github.com/tmux/tmux/releases/download/$TMUX_VERSION/tmux-$TMUX_VERSION.tar.gz" \
+    "$tmp/tmux.tar.gz" tmux
   run tar -xzf "$tmp/tmux.tar.gz" -C "$tmp"
   info "building (about a minute)…"
   # compiler output goes to a log (shown only if the build fails)

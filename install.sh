@@ -115,7 +115,7 @@ if [ "$UPDATE" = 1 ]; then
   if [ "$DRY_RUN" = 1 ]; then
     info "[dry-run] update  (zsh/functions.zsh)"
   else
-    # functions.zsh returns non-zero at its end (a hook test): only `update` counts
+    # only `update`'s own result counts
     TERMINAL_SETUP=$REPO zsh -c '. "$TERMINAL_SETUP/zsh/functions.zsh"; update' \
       || warn "update finished with errors (see above)"
   fi

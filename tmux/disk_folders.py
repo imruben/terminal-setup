@@ -446,6 +446,12 @@ class Folders(TableApp):
         """Take what was deleted out of the measures, so the sizes above it are right at once."""
         size = r["size"] or 0
         pre = r["path"].rstrip("/") + "/"
+        # a du still measuring there prints the folders above last, with what was deleted still in
+        # them: measure again instead of fixing totals du is about to write over
+        if any(not m.done and not m.cancelled and m.covers(os.path.dirname(r["path"]) or "/") for m in self.measures):
+            self.listing.clear()
+            self.ensure_measured(self.path, again=True)
+            return
         for m in self.measures:
             for p in [p for p in list(m.sizes) if p == r["path"] or p.startswith(pre)]:
                 m.sizes.pop(p, None)

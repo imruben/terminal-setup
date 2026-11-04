@@ -65,6 +65,8 @@ def clean(line):
 TAIL = 400            # lines shown when nothing filters
 SHOW_MAX = 2000       # most matches laid out (the newest; the count covers them all)
 FULL_MAX = 100000     # most lines read from a long log (each kept line costs ~1 KB)
+FULL_BYTES = 32 << 20  # and most text: each line is kept whole (to copy it) and lowercased (to
+                       # search), so 100000 lines of 1 MB would not fit in memory · the newest that fit
 LINE_MAX = 8000       # characters of one line shown (the whole line is still what gets copied)
 BACK_MAX = 2000       # back in sight after a long time hidden: at most this many lines caught up
 SEVERITY = {"All": None, "Warnings": ("warning", "error"), "Errors": ("error",)}
@@ -326,11 +328,23 @@ class Logs(Viewer):
                 self.full_proc = proc
             if old is not None and old.poll() is None and old is not proc:
                 old.kill()                                # an older read (another container)
-            data, _ = proc.communicate()
+            # read as it comes, keeping the newest lines that fit FULL_BYTES (not all at once)
+            kept, size, total = collections.deque(), 0, 0
+            for raw in proc.stdout:
+                kept.append(raw)
+                size += len(raw)
+                total += 1
+                while size > FULL_BYTES and len(kept) > 1:
+                    size -= len(kept.popleft())
+                if total % 2000 == 0 and (gen != self.gen or gen_full != self.gen_full):
+                    proc.kill()                           # not wanted any more
+                    break
+            proc.wait()
             if gen != self.gen or gen_full != self.gen_full:
                 return
-            lines = data.decode("utf-8", "replace").splitlines()
-            self.cut_off = len(lines) >= FULL_MAX
+            lines = [raw.decode("utf-8", "replace").rstrip("\r\n") for raw in kept]
+            del kept
+            self.cut_off = len(lines) < total or total >= FULL_MAX
 
             def safe(l):
                 try:
@@ -480,7 +494,7 @@ class Logs(Viewer):
             if self.full is None:
                 state = f"{YELLOW}reading the whole log… "
             else:
-                cut = f" (the newest {FULL_MAX:,})" if getattr(self, "cut_off", False) else ""
+                cut = " (the newest)" if getattr(self, "cut_off", False) else ""
                 state = f"{GREEN}{self.matches} of {len(self.full):,} lines{cut} "
         else:
             new = f" · {self.new_lines} new" if self.new_lines else ""

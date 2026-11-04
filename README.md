@@ -102,7 +102,7 @@ cd ~/workspace/terminal-setup && ./install.sh
 - Te pedirá tu contraseña (`sudo`) para instalar paquetes.
 - **Ubuntu 24.04** trae versiones antiguas de algunas herramientas. El instalador lo detecta y, solo en ese caso:
   - **compila tmux 3.6** (24.04 trae la 3.4, y la configuración necesita la 3.6). Tarda un minuto y se instala en `/usr/local`.
-  - instala **fzf**, **fastfetch**, **starship** y **lazygit** desde sus versiones oficiales, porque las de 24.04 son antiguas o no existen (y **yq** siempre, también en 26.04: el `yq` de Ubuntu es otro programa).
+  - instala **fzf**, **fastfetch**, **starship** y **lazygit** desde sus versiones oficiales, porque las de 24.04 son antiguas o no existen (y **yq** siempre, también en 26.04: el `yq` de Ubuntu es otro programa). Cada descarga se comprueba con su sha256 (`install/versions.sh`) antes de usarla; starship es la excepción, porque su instalador oficial siempre trae la última versión.
 - **Fuente**: si tienes escritorio, la instala en `~/.local/share/fonts`. Después, en la configuración de tu terminal (GNOME Terminal, Konsole, etc.), elige **JetBrainsMono Nerd Font**.
 - Por SSH en un servidor: la fuente va en el ordenador **desde el que te conectas**, no en el servidor.
 
@@ -307,6 +307,7 @@ terminal-setup/
 │   └── platform/                   lo propio de linux / wsl / macos
 ├── tmux/
 │   ├── tmux.conf                   lo carga tu ~/.tmux.conf
+│   ├── pane-menu.conf              el menú de panel (clic derecho, y Alt+clic derecho en apps con ratón)
 │   ├── terminal.zsh                gestor de sesiones (comando `terminal`, selector)
 │   ├── guide.zsh · quick-menu.zsh  guía (Ctrl+a ?) y menú rápido (Ctrl+a Space)
 │   ├── system.sh                   construye el monitor (sesión `system`)

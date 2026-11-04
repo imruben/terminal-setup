@@ -20,6 +20,22 @@ ok()    { printf '    %s✔%s %s\n' "$GREEN" "$R" "$*"; }
 warn()  { printf '    %s!%s %s\n' "$YELLOW" "$R" "$*"; }
 fail()  { printf '    %s✘ %s%s\n' "$RED" "$*" "$R" >&2; }
 die()   { fail "$*"; exit 1; }
+
+# download <url> <file> <name in versions.sh's SHA_…>: the file, checked against its sha256
+# before anything uses it (a download that changed or broke installs nothing)
+download() {
+  local url=$1 file=$2 var="SHA_$3" want got
+  want=${!var:-}
+  [ -n "$want" ] || die "no checksum for $3 in install/versions.sh: add its $var"
+  run curl -fsSL -o "$file" "$url"
+  [ "${DRY_RUN:-0}" = 1 ] && return 0
+  if have sha256sum; then got=$(sha256sum "$file"); else got=$(shasum -a 256 "$file"); fi
+  got=${got%% *}
+  if [ "$got" != "$want" ]; then
+    rm -f "$file"
+    die "${url##*/}: its checksum is not the expected one (got $got, expected $want): nothing was installed from it"
+  fi
+}
 have()  { command -v "$1" >/dev/null 2>&1; }
 # /home/me/x → ~/x for messages
 tilde() { case $1 in "$HOME"*) printf '~%s' "${1#"$HOME"}" ;; *) printf '%s' "$1" ;; esac; }
