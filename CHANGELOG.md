@@ -17,7 +17,7 @@ Para publicar una versión, mira [Publicar una versión](#publicar-una-versión)
 
 ## [Sin publicar]
 
-## [1.0.0] — sin publicar
+## [1.0.0] — 2026-11-04
 
 La primera versión etiquetada: todo lo que había hasta ahora.
 
