@@ -7,6 +7,7 @@
 #         open / rename / close (close asks first) / session tree · wheel scrolls
 #  Keys:  type to filter · ↑↓ PgUp PgDn Home End move · Enter open · Ctrl+n new
 #         · Ctrl+r rename · Ctrl+e describe · Ctrl+x close (asks first) · Ctrl+t session tree
+#         · Ctrl+s new terminals start in this session (again: back to the system monitor)
 #         · Esc clears / closes · in a question: y / n, or click its buttons
 #  Exit status: 0 when a session was opened, 1 when closed without choosing.
 # ═══════════════════════════════════════════════════════════════
@@ -15,11 +16,13 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import tmuxlink
 from tui import (BLUE, BOLD, CLEAR_EOL, CRUST, DANGER_BG, DIM, GREEN, ACCENT, RED, RESET, SUB, SURFACE,
-                 TEXT, YELLOW, Menu, Screen, cut, ellipsis, highlight, vlen)
+                 TEXT, YELLOW, Menu, Screen, cut, ellipsis, highlight, pad, vlen)
 
 ICON_TERM, ICON_SEARCH, ICON_NEW = "\U000F018D", "\U000F0349", "\U000F0415"
 ICON_EDIT, ICON_CLOSE, ICON_FOLDER, ICON_OPEN = "\U000F03EB", "\U000F0156", "\U000F024B", "\U000F0599"
@@ -27,32 +30,71 @@ ICON_TREE, ICON_MONITOR, ICON_RESTART = "\U000F0645", "\U000F0430", "\U000F0450"
 MONITOR = "system"     # tmux/system.sh: always there, always first
 DESCRIPTIONS = os.path.expanduser("~/.tmux/descriptions.tsv")   # session name → what it is for
 ICON_DESCRIBE = "\U000F0369"
+ICON_START = "\U000F02DC"
+START = os.path.expanduser("~/.tmux/start-session")   # "name<TAB>folder": new terminals open it (terminal.zsh)
+
+
+def read_start():
+    """The session new terminals open (tmux/terminal.zsh autostart): the monitor when none is set."""
+    try:
+        with open(START, encoding="utf-8") as f:
+            name = f.readline().rstrip("\n").split("\t", 1)[0]
+    except OSError:
+        return MONITOR
+    return name or MONITOR
+
+
+def write_start(name, folder=""):
+    """New terminals open name (created in folder when it is not running) · MONITOR clears it."""
+    if not name or name == MONITOR:
+        try:
+            os.remove(START)
+        except FileNotFoundError:
+            pass
+        return
+    os.makedirs(os.path.dirname(START), exist_ok=True)
+    tmp = START + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(f"{name}\t{folder or os.path.expanduser('~')}\n")
+    os.replace(tmp, START)
+
 
 
 def read_descriptions():
     out = {}
     try:
-        with open(DESCRIPTIONS, encoding="utf-8") as f:
+        with open(DESCRIPTIONS, encoding="utf-8", errors="replace") as f:
             for line in f:
                 name, _, text = line.rstrip("\n").partition("\t")
                 if name and text:
                     out[name] = text
-    except FileNotFoundError:
+    except OSError:                                  # none yet, or unreadable: no descriptions
         pass
     return out
 
 
 def write_descriptions(d):
-    with open(DESCRIPTIONS, "w", encoding="utf-8") as f:
+    """Written whole and then moved into place: a picker closed halfway never leaves half a file."""
+    tmp = f"{DESCRIPTIONS}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         for name in sorted(d):
             f.write(f"{name}\t{d[name]}\n")
+    os.replace(tmp, DESCRIPTIONS)
 TOP = 3            # first list row on screen (1-based)
 WHEEL_STEP = 3
 HOME = os.path.expanduser("~")
 
 
-def tmux(*args):
-    return subprocess.run(["tmux", *args], capture_output=True, text=True)
+tmux = tmuxlink.tmux          # (a stuck server answers nothing after 5 s: the picker never freezes)
+
+
+def session_of(client):
+    """The session a client shows (display -c only says where a message goes, not whose #S)."""
+    for line in tmux("list-clients", "-F", "#{client_name}\t#{client_session}").stdout.splitlines():
+        name, _, sess = line.partition("\t")
+        if name == client:
+            return sess
+    return ""
 
 
 def tilde(path):
@@ -60,16 +102,17 @@ def tilde(path):
 
 
 def clean_name(name):
-    """tmux does not allow '.' or ':' in session names (a leading '-' would read as an option)."""
-    return re.sub(r"\s+", "-", re.sub(r"[.:]", "-", name.strip())).lstrip("-")
+    """tmux does not allow '.' or ':' in session names (a leading '-' would read as an option),
+    expands # in them (is#Sue → isue) and ends a command at a trailing ';'."""
+    return re.sub(r"\s+", "-", re.sub(r"[.:#;]", "-", name.strip())).lstrip("-")
 
 
 class Picker:
     def __init__(self, screen):
         self.screen = screen
         self.inside = bool(os.environ.get("TMUX"))
-        self.client = tmux("display", "-p", "#{client_name}").stdout.strip() if self.inside else ""
-        self.here = tmux("display", "-p", "#S").stdout.strip() if self.inside else ""
+        self.client = tmuxlink.client() if self.inside else ""        # the terminal that opened the popup
+        self.here = session_of(self.client) if self.inside else ""
         self.cwd = os.getcwd()
         self.query = ""
         self.top = 0
@@ -81,6 +124,7 @@ class Picker:
         self.msg = ""          # one-line feedback (errors in red)
         self.menu = None       # open right-click menu
         self.buttons = {}      # name → (row, x0, x1) of the clickable confirm buttons
+        self.start = read_start()
         self.refresh()
         self.cur = 1 if len(self.rows) > 1 else 0   # start on the first session, not on "new"
 
@@ -94,7 +138,7 @@ class Picker:
         for s in self.sessions:
             if not s[4] and s[0] in saved:
                 s[4] = saved[s[0]]
-                tmux("set", "-t", f"{s[0]}:", "@description", s[4])
+                tmux("set", "-t", f"{s[0]}:", "@description", tmuxlink.arg(s[4]))
         self.filter(keep_cursor=True)
 
     def filter(self, keep_cursor=False):
@@ -149,9 +193,7 @@ class Picker:
                        + (preview[n] if n < len(preview) else ""))
             lines.append(cut(row, w))
         lines.append(cut(self.footer(TOP + self.list_h), w))
-        self.screen.paint(lines)
-        if self.menu:
-            self.menu.draw()
+        self.screen.paint(lines, self.menu)
 
     def row(self, i, width):
         r, hot = self.rows[i], i == self.cur
@@ -164,7 +206,7 @@ class Picker:
         _, name, wins, attached, path, desc = r
         if self.mode == "kill" and name == self.target:
             what = "will be rebuilt" if name == MONITOR else "will be closed"
-            return DANGER_BG + CRUST + cut(f" {ICON_CLOSE} {name}  {what}", width).ljust(width) + RESET
+            return DANGER_BG + CRUST + pad(cut(f" {ICON_CLOSE} {name}  {what}", width), width) + RESET
         if name == self.here:
             mark = f"{ACCENT}▶"
         elif name == MONITOR:
@@ -176,9 +218,11 @@ class Picker:
         info = f"{wins} win · {tilde(path)}"
         if desc:
             info = f"{TEXT}{desc}{RESET}{DIM} · {info}"
-        name_w = min(len(name), max(4, width - 6))
-        body = (f" {mark}{RESET} {TEXT}{BOLD}{ellipsis(name, name_w)}{RESET}  "
-                f"{DIM}{ellipsis(info, max(0, width - name_w - 6))}")
+        start = f" {YELLOW}{ICON_START}{RESET}" if name == self.start else ""
+        extra = 2 if start else 0
+        name_w = min(vlen(name), max(4, width - 6 - extra))      # screen cells: 日本語 and emoji take 2
+        body = (f" {mark}{RESET} {TEXT}{BOLD}{ellipsis(name, name_w)}{RESET}{start}  "
+                f"{DIM}{ellipsis(info, max(0, width - name_w - 6 - extra))}")
         return highlight(body, width) if hot else body
 
     def preview(self, width):
@@ -196,17 +240,37 @@ class Picker:
         out = [f"{BLUE}{BOLD}{name}{RESET}  {DIM}{tilde(r[4])}"]
         if r[5]:
             out.append(f"{TEXT}{r[5]}")
-        for l in tmux("list-windows", "-t", f"={name}",
-                      "-F", "#{?window_active,▶,·}\t#I\t#W\t#{window_panes}").stdout.splitlines():
+        if name == self.start and name != MONITOR:
+            out.append(f"{YELLOW}{ICON_START}  new terminals open this session{DIM} · ctrl-s: back to the monitor")
+        elif name == self.start:
+            out.append(f"{YELLOW}{ICON_START}  new terminals open the monitor{DIM} · ctrl-s on a session changes it")
+        elif name == MONITOR and not any(s[0] == self.start for s in self.sessions):
+            out.append(f"{YELLOW}{ICON_START}  new terminals open «{self.start}»{DIM} · not running now: "
+                       f"the next terminal creates it · ctrl-s here: the monitor again")
+        wins, cap = self.peek(name)
+        for l in wins:
             act, idx, wname, panes = l.split("\t")
             out.append(f"{ACCENT if act == '▶' else DIM}{act}{RESET} {SUB}{idx} {TEXT}{wname}{RESET} "
                        f"{DIM}({panes} pane{'s' if panes != '1' else ''})")
         out.append(DIM + "─" * max(0, width - 1))
-        cap = tmux("capture-pane", "-ep", "-t", f"={name}:").stdout.rstrip("\n").split("\n")
-        while cap and not cap[-1].strip():
-            cap.pop()
         out += cap[-max(0, rows - len(out)):] if rows > len(out) else []
         return [cut(l, width) for l in out[:rows]]
+
+    def peek(self, name):
+        """(its windows, what its active pane shows) · asked at most every 0.5 s per session: the
+        preview is drawn on every mouse move, two tmux calls each time otherwise."""
+        cache = self.__dict__.setdefault("_peek", {})
+        at, value = cache.get(name, (0.0, None))
+        if value is None or time.monotonic() - at > 0.5:
+            wins = [l for l in tmux("list-windows", "-t", f"={name}",
+                                    "-F", "#{?window_active,▶,·}\t#I\t#W\t#{window_panes}").stdout.splitlines()
+                    if l.count("\t") == 3]
+            cap = tmux("capture-pane", "-ep", "-t", f"={name}:").stdout.rstrip("\n").split("\n")
+            while cap and not cap[-1].strip():
+                cap.pop()
+            value = (wins, cap)
+            cache[name] = (time.monotonic(), value)
+        return value
 
     def footer(self, y):
         if self.mode == "kill":
@@ -235,7 +299,8 @@ class Picker:
         if self.msg:
             return " " + self.msg
         # the longest hint that fits (a cut one would end mid-word)
-        for hint in ("enter open · right-click for more · ctrl-n new · ctrl-r rename · ctrl-e describe · ctrl-x close · ctrl-t tree",
+        for hint in ("enter open · right-click for more · ctrl-n new · ctrl-r rename · ctrl-e describe · ctrl-x close · ctrl-s start here · ctrl-t tree",
+                     "enter open · right-click for more · ctrl-n new · ctrl-r rename · ctrl-e describe · ctrl-x close · ctrl-t tree",
                      "enter open · right-click for more · ctrl-n new · ctrl-r rename · ctrl-x close · ctrl-t tree",
                      "enter open · right-click for more · ctrl-n new · ctrl-x close",
                      "enter open · right-click for more",
@@ -297,7 +362,7 @@ class Picker:
         if self.inside and name == self.here:
             # this popup's own session: tmux has moved the client to another one and the
             # popup stays open, so just carry on picking from what is left
-            self.here = tmux("display", "-p", "-c", self.client, "#S").stdout.strip()
+            self.here = session_of(self.client)
         self.msg = f"{GREEN}closed «{name}»"
         self.refresh()
         if not self.sessions:            # nothing left: tmux has detached us
@@ -306,6 +371,9 @@ class Picker:
     def rename(self):
         new, old, self.mode = clean_name(self.text), self.target, "list"
         if not new or new == old:
+            return
+        if new == MONITOR:                       # tmux/system.sh would take it for the monitor
+            self.msg = f"{YELLOW}«{MONITOR}» is the system monitor's name"
             return
         res = tmux("rename-session", "-t", f"={old}", new)
         d = read_descriptions()
@@ -317,6 +385,10 @@ class Picker:
         else:
             if old == self.here:
                 self.here = new
+            if old == self.start:                    # new terminals follow the rename
+                folder = next((s[3] for s in self.sessions if s[0] == old), "")
+                write_start(new, folder)
+                self.start = new
             self.msg = f"{GREEN}renamed «{old}» → «{new}»"
         self.refresh()
 
@@ -333,6 +405,20 @@ class Picker:
                 self.start_new()
         elif r[0] == "session":
             self.open(r[1])
+
+    def toggle_start(self, i):
+        """New terminals open this session · again (or on the monitor): back to the monitor."""
+        if i is None or self.rows[i][0] != "session":
+            return
+        name, path = self.rows[i][1], self.rows[i][4]
+        if name == MONITOR or name == self.start:
+            write_start(MONITOR)
+            self.start = MONITOR
+            self.msg = f"{GREEN}new terminals open the system monitor"
+        else:
+            write_start(name, path)
+            self.start = name
+            self.msg = f"{GREEN}new terminals open «{name}» (created in {tilde(path)} when it is not running)"
 
     def restart_monitor(self):
         subprocess.run([os.path.join(os.path.dirname(os.path.realpath(__file__)), "system.sh"), "restart"], capture_output=True)
@@ -355,7 +441,7 @@ class Picker:
         d = read_descriptions()
         if text:
             d[name] = text
-            tmux("set", "-t", f"{name}:", "@description", text)
+            tmux("set", "-t", f"{name}:", "@description", tmuxlink.arg(text))
         else:
             d.pop(name, None)
             tmux("set", "-u", "-t", f"{name}:", "@description")
@@ -380,6 +466,8 @@ class Picker:
                     (f"{ICON_OPEN}  Open" + ("  (you are here)" if name == self.here else ""), "o",
                      lambda: self.open(name)),
                     (f"{ICON_RESTART}  Restart the monitor…", "r", lambda: self.ask_kill(i)),
+                    (f"{ICON_START}  New terminals start here" + ("  (they do)" if self.start == MONITOR else ""), "s",
+                     None if self.start == MONITOR else (lambda: self.toggle_start(i))),
                     ("", "", None),
                     (f"{ICON_NEW}  New session…", "n", self.start_new),
                     (f"{ICON_TREE}  Session tree", "t", self.tree)], x, y, self.h, self.w)
@@ -388,6 +476,8 @@ class Picker:
                       lambda: self.open(name)),
                      (f"{ICON_EDIT}  Rename…", "r", lambda: self.ask_rename(i)),
                      (f"{ICON_DESCRIBE}  Describe…", "d", lambda: self.ask_describe(i)),
+                     (f"{ICON_START}  New terminals start here", "s", lambda: self.toggle_start(i)) if name != self.start
+                     else (f"{ICON_START}  New terminals start in the monitor again", "s", lambda: self.toggle_start(i)),
                      ("", "", None),
                      (f"{ICON_NEW}  New session…", "n", self.start_new),
                      (f"{ICON_TREE}  Session tree", "t", self.tree),
@@ -436,7 +526,9 @@ class Picker:
                     self.describe()
                 elif mode == "new-name":
                     new = clean_name(self.text)
-                    if new and any(s[0] == new for s in self.sessions):
+                    if new == MONITOR and not any(s[0] == new for s in self.sessions):
+                        self.msg, self.mode = f"{YELLOW}«{MONITOR}» is the system monitor's name", "list"
+                    elif new and any(s[0] == new for s in self.sessions):
                         self.open(new)
                     elif new:
                         self.new_name, self.mode, self.text = new, "new-dir", tilde(self.cwd)
@@ -471,6 +563,8 @@ class Picker:
             self.ask_kill(self.cur)
         elif name == "ctrl-t":
             self.tree()
+        elif name == "ctrl-s":
+            self.toggle_start(self.cur)
         elif name in ("up", "down"):
             self.cur = max(0, min(len(self.rows) - 1, self.cur + (-1 if name == "up" else 1)))
             self.ensure_visible()

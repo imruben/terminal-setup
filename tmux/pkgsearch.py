@@ -13,6 +13,7 @@
 
 import os
 import sys
+import time
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -24,6 +25,7 @@ from tui import DIM, GREEN, SUB, TEXT, YELLOW
 
 ICON = dict(add="\U000F01DA", remove="\U000F0A7A", info="\U000F02FD", copy="\U000F018F")
 LIMIT = 400                                     # rows per source
+KEEP_QUERIES = 6                                # the answers of the last few searches are kept, older ones go
 ORDER = {"apt": 0, "snap": 1, "brew": 2}
 
 
@@ -32,7 +34,7 @@ class Search(SourcesPane, TableApp):
     master = True
     title = "Search"
     noun = "found"
-    interval = 0.4
+    interval = 1.0
     reload_every = float("inf")                 # it searches when the words change, not on a timer
     remote_query = True
     sort_key = "rank"
@@ -46,6 +48,7 @@ class Search(SourcesPane, TableApp):
         self.start_sources()
         self.pending = False
         self.truncated = set()
+        self.recent = []                            # the last searches, newest last (their answers are kept)
         super().__init__(screen)
 
     def fetch(self):
@@ -54,28 +57,51 @@ class Search(SourcesPane, TableApp):
         if not words or len(" ".join(words)) < 2:
             return []
         q, rows, notes = words[0], [], read_notes()
+        key = tuple(words)
+        if key in self.recent:
+            self.recent.remove(key)
+        self.recent.append(key)
+        for old in self.recent[:-KEEP_QUERIES]:     # memory: only the last few searches' answers stay
+            for s in pkgsrc.sources():
+                self.bg.drop((s.name, "search", old))
+        self.recent = self.recent[-KEEP_QUERIES:]
         for s in pkgsrc.sources():
-            if s.name == "apt":
+            def ask(s=s):
+                """In the background: search, rank, keep the best LIMIT, then mark which of those are
+                installed (only what is shown is kept: a search for 'li' finds ~70 000)."""
                 found = s.search(words)
-            else:                                   # the same words are not asked twice for 10 min
-                found = self.bg.get((s.name, "search", tuple(words)), lambda s=s: s.search(words), 600) or []
-            for r in found:
-                name = r["name"]
-                r["rank"] = (0 if name == q else 1 if name.startswith(q) else 2 if q in name else 3,
-                             len(name), ORDER.get(s.name, 9), name)
-            found.sort(key=lambda r: r["rank"])
-            if len(found) > LIMIT:
-                self.truncated.add(s.name)
+                for r in found:
+                    name = r["name"]
+                    r["rank"] = (0 if name == q else 1 if name.startswith(q) else 2 if q in name else 3,
+                                 len(name), ORDER.get(s.name, 9), name)
+                found.sort(key=lambda r: r["rank"])
+                cut = len(found) > LIMIT
                 found = found[:LIMIT]
-            if s.name == "apt":
-                s.mark_installed(found)
+                if s.name == "apt":
+                    s.mark_installed(found)
+                return {"rows": found, "cut": cut}
+            # every source in the background (apt-cache too): typing never waits · the same words
+            # are not asked twice for 10 min
+            got = self.bg.get((s.name, "search", key), ask, 600) or {"rows": [], "cut": False}
+            found = [dict(r) for r in got["rows"]]
+            if got["cut"]:
+                self.truncated.add(s.name)
             for r in found:
                 rows.append({**r, "id": f"{s.name}:{r['name']}", "src": s.name,
                              "why": notes.get(note_key(s.name, r["name"]), "")})
         return rows
 
-    # typing only marks the search as pending; it runs on the next tick (no lag while typing)
+    # typing only marks the search as pending; it runs once typing pauses (TYPING_PAUSE), not for
+    # every prefix ("postgresql" would start apt, snap and brew searches for p, po, pos…)
+    TYPING_PAUSE = 0.35
+
+    def tick_every(self):
+        """Fast only while a search waits for typing to pause."""
+        return 0.15 if self.visible and self.pending else super().tick_every()
+
     def on_tick(self):
+        if self.pending and time.monotonic() - self.typed_at < self.TYPING_PAUSE:
+            return
         if self.changed() or self.pending:
             self.pending = False
             self.reload()
@@ -86,12 +112,12 @@ class Search(SourcesPane, TableApp):
             if kind == "char":
                 self.query += ev[1]
                 self.query_changed()
-                self.pending = True
+                self.pending, self.typed_at = True, time.monotonic()
                 return
             if kind == "key" and ev[1] in ("backspace", "ctrl-u", "esc"):
                 self.query = "" if ev[1] != "backspace" else self.query[:-1]
                 self.query_changed()
-                self.pending = True
+                self.pending, self.typed_at = True, time.monotonic()
                 return
         super().dispatch(ev)
 
@@ -120,7 +146,7 @@ class Search(SourcesPane, TableApp):
 
     def selected(self, r):
         if r:
-            tmuxlink.put("@pkg-selected", r["id"])
+            tmuxlink.publish("@pkg-selected", r["id"])
 
     def menu_title(self, r):
         return f"{r['name']} · {r['src']}"
@@ -154,7 +180,9 @@ class Search(SourcesPane, TableApp):
             self.ask_remove(r)
 
     def copy(self, text):
-        tmuxlink.copy(text)
+        if not tmuxlink.copy(text):
+            self.flash("could not copy", ok=False)
+            return
         self.flash(f"copied: {text}")
 
 

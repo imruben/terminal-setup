@@ -1,0 +1,78 @@
+# Every push and pull request: scripts parse and pass shellcheck, the unit tests pass on the
+# oldest and newest Python the monitor supports, and the whole install works on a fresh
+# Ubuntu (tests/install/run.sh: install, the tmux monitor tab by tab, install again, uninstall).
+# Actions are pinned to a commit (a tag can be moved to other code; a commit cannot), the version
+# in the comment · Dependabot (.github/dependabot.yml) proposes the new ones.
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh shellcheck
+      - name: make check
+        run: make check
+      - name: pyflakes
+        run: pip install -q pyflakes && python -m pyflakes tmux tests/unit
+      - name: unit tests
+        run: make test V=1
+
+  # macOS has never been tried on a real Mac: this says what breaks there (the unit tests, and every
+  # monitor pane run in tmux) without failing the whole run, until it is known to work
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: tmux
+        run: brew install tmux
+      - name: unit tests
+        run: make test V=1
+      - name: every monitor pane
+        run: tests/smoke/panes.sh 4
+
+  install:
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ["24.04", "26.04"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: install, monitor, update, uninstall in ubuntu:${{ matrix.ubuntu }}
+        env:
+          LOGS: ${{ runner.temp }}/logs
+        run: mkdir -p "$LOGS" && tests/install/run.sh ${{ matrix.ubuntu }}
+      - name: logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: install-${{ matrix.ubuntu }}
+          path: ${{ runner.temp }}/logs

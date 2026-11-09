@@ -23,7 +23,7 @@ import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from tui import BLUE, BOLD, DIM, GREEN, RED, RESET, SUB, TEXT, YELLOW
-from viewer import Viewer, run
+from viewer import BackgroundViewer, run
 
 HOME = os.path.expanduser("~")
 BAT = shutil.which("bat") or shutil.which("batcat")
@@ -56,9 +56,26 @@ def when(stamp):
     return f"{t:%Y-%m-%d %H:%M} · {ago}"
 
 
-SECRET_KEY = re.compile(r"PASS|SECRET|TOKEN|KEY|PRIVATE|CREDENTIAL|DSN|AUTH", re.I)
-URL_PASSWORD = re.compile(r"(\w+://[^:/@\s]+:)([^@\s]+)(@)")
+SECRET_KEY = re.compile(r"PASS|PWD|_PW\b|^PW\b|SECRET|TOKEN|KEY|PRIVATE|CREDENTIAL|DSN|AUTH|JWT|SALT|COOKIE", re.I)
+URL_PASSWORD = re.compile(r"(\w+://[^:/@\s]*:)(\S+)(@[^@\s]*)")           # the last @ is the host's
 REDIS_PASSWORD = re.compile(r"(redis-cli\b[^;|&]*?\s-a\s+)(\S+)")      # inside a CMD-SHELL string
+# a password given to a client on its command line: mysql -psecret · mongosh -p s3cret ·
+# redis-server --requirepass x · curl -u user:pw · --password=x
+INLINE = [re.compile(r"(\b(?:mysql|mysqladmin|mysqldump|mariadb)\b[^;|&]*?\s-p)(\S+)"),
+          re.compile(r"(\b(?:mongo|mongosh|mongodump|mongorestore)\b[^;|&]*?\s(?:-p|--password)[ =])(\S+)"),
+          re.compile(r"(--(?!no-)[\w-]*(?:requirepass|masterauth|password|pass|token|secret)[ =])(\S+)", re.I),
+          re.compile(r"(\bcurl\b[^;|&]*?\s(?:-u|--user)\s+[^:\s]+:)(\S+)"),
+          re.compile(r"(\b[\w.]*(?:password|passwd|pwd|secret|token|api_?key|apikey|auth|credential|private_?key)"
+                     r"[\w.]*=)([^\s&;'\",\]]+)", re.I)]
+
+
+def hide_inline(text):
+    """Secrets inside a command line or a value (REDIS_ARGS=--requirepass x, JAVA_OPTS=-D…password=x)."""
+    text = URL_PASSWORD.sub(r"\1••••\3", text)
+    text = REDIS_PASSWORD.sub(r"\1••••", text)
+    for rx in INLINE:
+        text = rx.sub(lambda m: m[1] + "••••", text)
+    return text
 
 
 def hide(key, value):
@@ -66,7 +83,7 @@ def hide(key, value):
     if isinstance(value, str):
         if SECRET_KEY.search(str(key)) and value:
             return "•••• (hidden)"
-        return URL_PASSWORD.sub(r"\1••••\3", value)
+        return hide_inline(value)
     return value
 
 
@@ -79,12 +96,18 @@ def hide_args(args):
         redis = redis or "redis-cli" in a
         if hide_next and not a.startswith("-"):
             out.append("••••")
-        elif "=" in a and SECRET_KEY.search(a.split("=", 1)[0]):
+        elif "=" in a and SECRET_KEY.search(a.split("=", 1)[0].lstrip("-")):
             out.append(a.split("=", 1)[0] + "=••••")
         else:
-            out.append(REDIS_PASSWORD.sub(r"\1••••", URL_PASSWORD.sub(r"\1••••\3", a)))
+            out.append(hide_inline(a))                   # sh -c "redis-server --requirepass x"…
         hide_next = (a.startswith("-") and "=" not in a and bool(SECRET_KEY.search(a))) or (redis and a == "-a")
-    return out
+    # a client and its password in separate arguments (mysqladmin ping -psecret · curl -u a:b):
+    # the whole line, seen at once, says which is which · the list keeps its shape
+    if any(" " in a for a in out):
+        return [hide_inline(a) for a in out]
+    joined = " ".join(out)
+    masked = hide_inline(joined).split(" ")
+    return masked if len(masked) == len(out) else out
 
 
 def to_yaml(obj, indent=0, key=""):
@@ -125,30 +148,84 @@ def scalar(v):
 def show_text(text, language, width):
     if BAT:
         res = subprocess.run([BAT, "--color=always", "--style=numbers", "--paging=never", f"--language={language}",
-                              f"--terminal-width={max(20, width - 4)}"], input=text, capture_output=True, text=True)
+                              f"--terminal-width={max(20, width - 4)}"], input=text, capture_output=True, text=True,
+                             timeout=10)
         if res.returncode == 0:
             return res.stdout.splitlines()
     return [f"{DIM}{n:4}{RESET} {line}" for n, line in enumerate(text.splitlines(), 1)]
 
 
+SECRET_LINE = re.compile(r"^(\s*(?:-\s*)?(?:(?:ENV|ARG)\s+)?[\"']?([\w.\-]+)[\"']?\s*[:=]\s*)(\S.*?)\s*$")
+
+
+PAIR = re.compile(r"(\b([\w.\-]+)=)(\"[^\"]*\"|'[^']*'|[^\s,\]\"']+)")
+
+
+def mask_secrets(text):
+    """A file as text with the values of secret-looking keys hidden: PASSWORD: x, - TOKEN=x,
+    ENV A=1 API_KEY=x, ARG SECRET x, ["API_KEY=x"], and the lines of a block (KEY: | …)
+    (${VARS} stay: they are not secrets themselves)."""
+    out, block = [], None          # block: indent of a secret key whose value is the lines below
+    for line in text.splitlines():
+        indent = len(line) - len(line.lstrip())
+        if block is not None:
+            if line.strip() and indent <= block:
+                block = None
+            else:
+                out.append((" " * indent + "•••• (hidden)") if line.strip() else line)
+                continue
+        arr = re.search(r"\[.*\]", line)                # exec form: ["redis-cli", "-a", "pw", "ping"]
+        if arr:
+            try:
+                items = json.loads(arr[0])
+            except ValueError:
+                items = None
+            if isinstance(items, list) and items and all(isinstance(a, str) for a in items):
+                masked = hide_args(items)
+                if masked != items:
+                    line = line[:arr.start()] + json.dumps(masked, ensure_ascii=False) + line[arr.end():]
+        m = SECRET_LINE.match(line)
+        if m and SECRET_KEY.search(m[2]) and re.fullmatch(r"[|>][-+0-9]*", m[3]):
+            out.append(m[1] + m[3])                       # PRIVATE_KEY: | → the next lines are the key
+            block = indent
+            continue
+        if m and SECRET_KEY.search(m[2]) and not m[3].startswith("${") and m[3] not in ("''", '""'):
+            line = m[1] + "•••• (hidden)"
+        else:
+            env = re.match(r"^(\s*(?:ENV|ARG)\s+)([\w.\-]+)(\s+)(\S.*)$", line)    # ENV KEY value
+            if env and SECRET_KEY.search(env[2]) and "=" not in env[2]:
+                line = env[1] + env[2] + env[3] + "•••• (hidden)"
+            else:                                         # KEY=value pairs anywhere on the line
+                line = PAIR.sub(lambda p: p[1] + "••••" if SECRET_KEY.search(p[2]) and not p[3].startswith("${")
+                                else p[0], hide_inline(line))
+        out.append(line)
+    return "\n".join(out)
+
+
+_shown_files = {}       # (path, its mtime and size, language, width) → lines
+
+
 def show_file(path, language, width):
     # bat wraps the file itself (to the pane width); viewer wrapping only adds an indent
-    """A file as coloured lines (bat) or plain ones."""
-    if BAT:
-        res = subprocess.run([BAT, "--color=always", "--style=numbers", "--paging=never", f"--language={language}",
-                              f"--terminal-width={max(20, width - 4)}", path], capture_output=True, text=True)
-        if res.returncode == 0:
-            return res.stdout.splitlines()
-    with open(path, encoding="utf-8", errors="replace") as f:
-        return [f"{DIM}{n:4}{RESET} {line.rstrip()}" for n, line in enumerate(f, 1)]
+    """A file as coloured lines (bat) or plain ones · kept while the file stays the same (the tab
+    is asked again every few seconds: bat each time was 20-30 ms for the same lines)."""
+    st = os.stat(path)
+    key = (path, st.st_mtime_ns, st.st_size, language, width)
+    if key not in _shown_files:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = mask_secrets(f.read().expandtabs(4))      # secrets never reach the screen
+        if len(_shown_files) > 32:
+            _shown_files.clear()
+        _shown_files[key] = show_text(text, language, width)
+    return list(_shown_files[key])
 
 
-class Details(Viewer):
+class Details(BackgroundViewer):
     icon = "\U000F0868"
     title = "Container"
     option = "@docker-selected"
     tabs = ["Details", "Dockerfile", "Compose", "Merged"]
-    interval = 0.3
+    interval = 1.0                # (the master wakes it when the selection changes: tmuxlink.publish)
     refresh_every = 5
     wrap_lines = True
     empty = "highlight a container in the Containers pane"
@@ -158,7 +235,7 @@ class Details(Viewer):
         super().__init__(screen)
 
     def inspect(self, name):
-        res = docker("inspect", name)
+        res = docker("container", "inspect", name)        # not a network or volume of the same name
         try:
             return json.loads(res.stdout)[0] if res and res.returncode == 0 else None
         except (ValueError, IndexError):
@@ -176,8 +253,10 @@ class Details(Viewer):
         if key not in self.compose_cache:
             args = [a for f in files for a in ("-f", f)] + [a for e in envs if os.path.exists(e) for a in ("--env-file", e)]
             res = docker("compose", *args, "config", "--format", "json", cwd=wd if os.path.isdir(wd) else None)
+            if res is None:
+                return {}                  # no answer in time (Docker busy): not kept, asked again next time
             try:
-                self.compose_cache[key] = json.loads(res.stdout) if res and res.returncode == 0 else {}
+                self.compose_cache[key] = json.loads(res.stdout) if res.returncode == 0 else {}
             except ValueError:
                 self.compose_cache[key] = {}
         return self.compose_cache[key]
@@ -194,11 +273,15 @@ class Details(Viewer):
         build = svc.get("build")
         if not build:
             return (None, None, svc.get("image"))
+        if build.get("dockerfile_inline"):
+            return ("inline:" + build["dockerfile_inline"], build.get("target"), None)
         ctx = build.get("context", wd)
+        if re.match(r"^(?:https?|git|ssh)://|^git@|\.git(?:#|$)", str(ctx)):
+            return ("remote:" + str(ctx), build.get("target"), None)
         df = build.get("dockerfile", "Dockerfile")
         return (df if os.path.isabs(df) else os.path.join(ctx, df), build.get("target"), None)
 
-    def load(self, name, tab, width):
+    def compute(self, name, tab, width):                 # in a thread (BackgroundViewer)
         c = self.inspect(name)
         if not c:
             return [f"  {YELLOW}{name} is gone (removed, or Docker is not running)"]
@@ -242,10 +325,12 @@ class Details(Viewer):
         ports = c["NetworkSettings"].get("Ports") or {}
         shown = False
         for inside, binds in sorted(ports.items()):
+            v4 = {b.get("HostPort") for b in binds or [] if b.get("HostIp") in ("0.0.0.0", "")}
             for b in binds or []:
-                if b.get("HostIp") in ("::",):
-                    continue
-                url = f"  {BLUE}http://localhost:{b['HostPort']}" if inside.endswith("/tcp") else ""
+                if b.get("HostIp") == "::" and b.get("HostPort") in v4:
+                    continue                             # the same port, for IPv6: once is enough
+                url = (f"  {BLUE}http://localhost:{b['HostPort']}" if inside.endswith("/tcp")
+                       and b.get("HostIp", "") in ("", "0.0.0.0", "::", "127.0.0.1", "::1") else "")
                 lines.append(k("Port" if not shown else "") + f"{TEXT}{b.get('HostIp') or '0.0.0.0'}:{b['HostPort']}"
                              f"{DIM} → {inside}{url}")
                 shown = True
@@ -268,7 +353,9 @@ class Details(Viewer):
                 if f:
                     lines.append(k("Files" if n == 0 else "") + f"{SUB}{tilde(f)}")
             built = self.compose_build(labels)
-            if built and built[0]:
+            if built and built[0] and built[0].startswith(("inline:", "remote:")):
+                lines.append(k("Dockerfile") + f"{DIM}{'in the compose file' if built[0][0] == 'i' else built[0][7:]}")
+            elif built and built[0]:
                 ok = os.path.exists(built[0])
                 lines.append(k("Dockerfile") + (f"{SUB}{tilde(built[0])}" if ok else f"{RED}{tilde(built[0])} (missing)")
                              + (f"{DIM}  target {built[1]}" if built[1] else ""))
@@ -285,6 +372,13 @@ class Details(Viewer):
             img = built[2] if built else c["Config"]["Image"]
             return [f"  {DIM}This service does not build anything: it runs the image {TEXT}{img}{DIM}."]
         path, target = built[0], built[1]
+        if path.startswith("inline:"):
+            return [f"  {BOLD}{BLUE}dockerfile_inline{RESET}{DIM}  · written in the compose file"
+                    + (f" · build target {TEXT}{target}" if target else ""), ""] + \
+                show_text(mask_secrets(path[7:]), "Dockerfile", width)
+        if path.startswith("remote:"):
+            return [f"  {DIM}It is built from a remote context: {TEXT}{path[7:]}{DIM}",
+                    f"  {DIM}(the Dockerfile is in that repository, not on this machine)"]
         if not os.path.exists(path):
             return [f"  {RED}{tilde(path)} does not exist any more"]
         head = [f"  {BOLD}{BLUE}{tilde(path)}{RESET}" + (f"{DIM}  · build target {TEXT}{target}" if target else ""), ""]

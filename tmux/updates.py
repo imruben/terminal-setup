@@ -24,7 +24,7 @@ from table import Column, TableApp, run
 from tui import DIM, SUB, TEXT, YELLOW
 
 ICON = dict(up="\U000F06B0", all="\U000F0B7A", check="\U000F0450", info="\U000F02FD")
-ASK_AGAIN = {"snap": 1800, "brew": 60}        # seconds between background checks (snap asks the store)
+ASK_AGAIN = {"apt": 30, "snap": 1800, "brew": 60}   # seconds between background checks (snap asks the store)
 
 
 def ago(seconds):
@@ -56,12 +56,13 @@ class Updates(SourcesPane, TableApp):
     def fetch(self):
         rows, notes = [], read_notes()
         for s in pkgsrc.sources():
-            found = s.updates() if s.name == "apt" else (self.bg.get((s.name, "updates"), s.updates,
-                                                                     ASK_AGAIN[s.name]) or [])
+            found = self.bg.get((s.name, "updates"), s.updates, ASK_AGAIN[s.name]) or []    # never on the UI thread
             for u in found:
-                rows.append({**u, "id": f"{s.name}:{u['name']}", "src": s.name,
+                held = u.get("held", False)
+                rows.append({**u, "id": f"{s.name}:{u['name']}", "src": s.name, "held": held,
+                             "origin": ("held · " if held and u["origin"] != "pinned" else "") + u["origin"],
                              "why": notes.get(note_key(s.name, u["name"]), ""),
-                             "order": (not u["security"], u["name"])})
+                             "order": (held, not u["security"], u["name"])})
         return rows
 
     def on_tick(self):
@@ -69,44 +70,55 @@ class Updates(SourcesPane, TableApp):
             self.reload()
 
     def summary(self):
-        apt = pkgsrc.source("apt")
-        stamp = apt.checked() if apt else None
-        checked = f"apt checked {ago(time.time() - stamp)}" if stamp else "apt never checked"
-        sec = sum(1 for r in self.all if r["security"])
+        checked = []
+        for s in pkgsrc.sources():                # when each source last looked for updates
+            stamp = s.checked()
+            if s.name in ("apt", "brew") or stamp:
+                checked.append(f"{s.name} {ago(time.time() - stamp) if stamp else 'never checked'}")
+        sec = sum(1 for r in self.all if r["security"] and not r["held"])
+        held = sum(1 for r in self.all if r["held"])
         loading = self.loading_note()
-        return ((f"{YELLOW}{sec} security{DIM} · " if sec else "") + f"{DIM}{checked}"
-                + (f"{DIM} · {loading}" if loading else ""))
+        return ((f"{YELLOW}{sec} security{DIM} · " if sec else "") + (f"{DIM}{held} held · " if held else "")
+                + f"{DIM}{' · '.join(checked)}" + (f"{DIM} · {loading}" if loading else ""))
 
     def footer(self, y):
         if not self.all and not (self.ask or self.prompt or self.msg):
+            if self.bg.loading():
+                return f" {DIM}checking for updates…"
             return f" {DIM}everything is up to date · right-click to check for updates"
         return super().footer(y)
 
     def row_colour(self, r):
+        if r["held"]:
+            return DIM
         return YELLOW if r["security"] else SUB
 
     def detail(self, r):
-        return f"{TEXT}{r['name']}{DIM} {r['old']} → {TEXT}{r['new']}{DIM} · {r['src']} · {r['origin']}"
+        why = (" · held: apt-mark unhold it to upgrade" if r["src"] == "apt" else " · pinned: brew unpin it to upgrade") \
+            if r["held"] else ""
+        return f"{TEXT}{r['name']}{DIM} {r['old']} → {TEXT}{r['new']}{DIM} · {r['src']} · {r['origin']}{why}"
 
     def selected(self, r):
         if r:
-            tmuxlink.put("@pkg-selected", r["id"])
+            tmuxlink.publish("@pkg-selected", r["id"])
 
     def menu_title(self, r):
         return f"{r['name']} · {r['src']}"
 
     def of(self, src):
-        return [x for x in self.all if x["src"] == src]
+        """What 'upgrade everything' upgrades from src (not what is held or pinned)."""
+        return [x for x in self.all if x["src"] == src and not x["held"]]
 
     def menu_items(self, r):
         s = pkgsrc.source(r["src"])
         if not s:
             return []
         n = len(self.of(r["src"]))
-        return [(f"{ICON['up']}  Upgrade {r['name']}…", "u", lambda: self.confirm(
+        return [(f"{ICON['up']}  Upgrade {r['name']}…" + ("  (held)" if r["held"] else ""), "u", None if r["held"] else
+                 lambda: self.confirm(
                     f"Upgrade {r['name']} {r['old']} → {r['new']}?",
                     lambda: pkg_popup(self, f"upgrade · {r['name']} · {r['src']}", s.upgrade(r["name"])), r)),
-                (f"{ICON['all']}  Upgrade everything from {r['src']} ({n})…", "a", lambda: self.ask_all(s, r)),
+                (f"{ICON['all']}  Upgrade everything from {r['src']} ({n})…", "a", (lambda: self.ask_all(s, r)) if n else None),
                 ("", "", None)] + self.check_items() + \
                [(f"{ICON['info']}  Details", "d", lambda: tmuxlink.focus("Package"))]
 
@@ -119,7 +131,7 @@ class Updates(SourcesPane, TableApp):
         items = self.check_items()
         for s in pkgsrc.sources():
             n = len(self.of(s.name))
-            if n:
+            if n:                                   # (nothing to upgrade when all of it is held)
                 items.append((f"{ICON['all']}  Upgrade everything from {s.name} ({n})…", "",
                               lambda s=s: self.ask_all(s, None)))
         return items

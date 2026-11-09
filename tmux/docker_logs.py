@@ -22,11 +22,12 @@
 #    asks again before overwriting)
 # ═══════════════════════════════════════════════════════════════
 
+import atexit
 import collections
-import ctypes
 import datetime
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -35,15 +36,38 @@ import time
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from logfmt import mark, parse
-from tui import ANSI, DIM, GREEN, RESET, TEXT, YELLOW, wrap
+from tui import ANSI, DIM, GREEN, RESET, SUB, SURFACE, TEXT, YELLOW, vlen, wrap
 from viewer import Viewer, run
 
-# everything but colours: cursor moves, OSC strings, charset switches, control characters
-NOT_SGR = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-ln-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Z0-9]|\x1b[=>]"
-                     r"|[\x00-\x08\x0b-\x1a\x1c-\x1f\x7f]")
+# A log line keeps its colours (SGR: ESC [ digits ; m) and nothing else that a terminal would
+# act on: cursor moves, screen clears and resets (ESC c), OSC / DCS / APC strings (also with no
+# end), charset switches, C0 and C1 control characters
+STRINGS = re.compile(r"\x1b[\]P^_X][^\x07\x1b]*(?:\x07|\x1b\\|$)")
+CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+SGR = re.compile(r"\x1b\[[0-9;]*m")
+OTHER = re.compile(r"\x1b[ -/]*[0-~]?|[\x00-\x08\x0b-\x1a\x1c-\x1f\x7f\x80-\x9f]")
+
+
+def clean(line):
+    """A log line with its colours and nothing a terminal would act on."""
+    line = STRINGS.sub("", line)                                   # OSC / DCS / APC… (ended or not)
+    line = CSI.sub(lambda m: m[0] if SGR.fullmatch(m[0]) else "", line)   # cursor moves, clears…
+    out, i = [], 0                                                 # then: any other ESC, C0, C1
+    for m in SGR.finditer(line):
+        out.append(OTHER.sub("", line[i:m.start()]))
+        out.append(m[0])
+        i = m.end()
+    out.append(OTHER.sub("", line[i:]))
+    return "".join(out)
+
+
 TAIL = 400            # lines shown when nothing filters
 SHOW_MAX = 2000       # most matches laid out (the newest; the count covers them all)
-FULL_MAX = 300000     # most lines read from a long log
+FULL_MAX = 100000     # most lines read from a long log (each kept line costs ~1 KB)
+FULL_BYTES = 32 << 20  # and most text: each line is kept whole (to copy it) and lowercased (to
+                       # search), so 100000 lines of 1 MB would not fit in memory · the newest that fit
+LINE_MAX = 8000       # characters of one line shown (the whole line is still what gets copied)
+BACK_MAX = 2000       # back in sight after a long time hidden: at most this many lines caught up
 SEVERITY = {"All": None, "Warnings": ("warning", "error"), "Errors": ("error",)}
 BASE_TABS = ["All", "Warnings", "Errors"]
 RANGES = [("Last 15 minutes", "15m"), ("Last hour", "1h"), ("Last 24 hours", "24h"), ("Last 7 days", "168h"),
@@ -55,17 +79,7 @@ SLEEP_AFTER = 5       # seconds out of sight before the live `docker logs -f` is
 STAMP = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) ?")   # docker logs --timestamps
 
 
-try:                                    # looked up here: the child (after fork) only calls it
-    _PRCTL = ctypes.CDLL(None, use_errno=True).prctl
-except (OSError, AttributeError):       # macOS: no prctl
-    _PRCTL = None
-
-
-def die_with_parent():
-    """Runs in the child before exec: the kernel ends `docker logs -f` when this pane's program
-    goes, however it goes (pane closed, tab rebuilt, killed) · no orphans following logs forever."""
-    if _PRCTL:
-        _PRCTL(1, 15)                                            # PR_SET_PDEATHSIG, SIGTERM
+from tmuxlink import die_with_parent    # (docker logs -f ends with this pane's program)
 
 
 def stamp_key(ts):
@@ -73,6 +87,19 @@ def stamp_key(ts):
     head, _, frac = ts.rstrip("Z").partition(".")
     return head + "." + frac.ljust(9, "0")
 ICON_SAVE, ICON_CLOCK = "\U000F0193", "\U000F0954"
+
+
+def passing(items, terms, wanted):
+    """The (number, entry) of items whose level is wanted (None: any) and whose text has every term
+    · one comprehension per case: an all() over a generator per line doubled the time of a search."""
+    if not terms:
+        return [x for x in items if x[1][0] in wanted] if wanted else list(items)
+    if len(terms) == 1:
+        t = terms[0]
+        if wanted:
+            return [x for x in items if t in x[1][2] and x[1][0] in wanted]
+        return [x for x in items if t in x[1][2]]
+    return [x for x in items if (not wanted or x[1][0] in wanted) and all(t in x[1][2] for t in terms)]
 
 
 class Logs(Viewer):
@@ -89,6 +116,9 @@ class Logs(Viewer):
         self.proc = None
         self.tail = collections.deque(maxlen=TAIL * 4)   # (level, pretty, plain) of the latest lines
         self.full = None                                 # every line, read when a filter needs it
+        self.full_seq = 0                                # lines ever put in full (the oldest go at FULL_MAX)
+        self._pick = None                                # the last search's answer, kept to go on from
+        self._laid = ({}, None)                          # (entry → its wrapped rows, for which terms and width)
         self.loading = False
         self.counts = collections.Counter()
         self.query = ""
@@ -104,7 +134,38 @@ class Logs(Viewer):
         self.asleep = False                              # live follow stopped while out of sight
         self.hidden_at = None
         self.checked_at = 0.0
+        self.started_at = None                           # the container's State.StartedAt when following began
+        self.no_logs = ""                                # a logging driver docker logs cannot read
+        self.full_proc = None                            # the whole-log read, killed when it is not wanted
+        self.new_lines = 0                               # lines that arrived while paused (not shown yet)
+        atexit.register(self.stop_all)                   # macOS has no PR_SET_PDEATHSIG: end the children
+        for sig in ("SIGTERM", "SIGHUP"):                # killed or the pane closed: atexit runs too
+            signal.signal(getattr(signal, sig), lambda *_: sys.exit(0))
         super().__init__(screen)
+
+    def stop_all(self):
+        for proc in (self.proc, self.full_proc):
+            if proc and proc.poll() is None:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+
+    def state(self, name):
+        """(running, started at, logging driver) · (False, None, '') when docker does not answer.
+        The driver is 'none' only when docker logs really cannot read it (the none driver, or
+        another one with dual logging's cache turned off): since Engine 20.10 it reads them all."""
+        try:
+            out = subprocess.run(["docker", "container", "inspect", "-f",
+                                  "{{.State.Running}}|{{.State.StartedAt}}|{{if eq .HostConfig.LogConfig.Type \"none\"}}none"
+                                  "{{else if eq (index .HostConfig.LogConfig.Config \"cache-disabled\") \"true\"}}none"
+                                  "{{else}}{{.HostConfig.LogConfig.Type}}{{end}}", name],
+                                 capture_output=True, text=True, timeout=3, stdin=subprocess.DEVNULL).stdout.strip()
+        except (subprocess.TimeoutExpired, OSError):
+            out = ""
+        running, _, rest = out.partition("|")
+        started, _, driver = rest.partition("|")
+        return running == "true", started or None, driver
 
     # ─── reading ───
     @staticmethod
@@ -113,29 +174,56 @@ class Logs(Viewer):
         stamp). Lines come from `docker logs --timestamps`: that stamp is cut off and shown in local time."""
         m = STAMP.match(raw)
         stamp = m[1] if m else None
-        line = NOT_SGR.sub("", raw[m.end():] if m else raw).expandtabs(4)     # tabs: Go's zap logs
-        lvl, pretty = parse(line, stamp)
+        line = clean(raw[m.end():] if m else raw).expandtabs(4)        # tabs: Go's zap logs
         plain = ANSI.sub("", line)
+        if len(plain) > LINE_MAX:                                      # a 1 MB line: shown cut, copied whole
+            line = plain[:LINE_MAX] + f"{RESET}{DIM} … ({len(plain) - LINE_MAX:,} more characters){RESET}"
+        lvl, pretty = parse(line, stamp)
         return (lvl, pretty, plain.lower(), plain, stamp)
 
     def start(self, name):
         self.stop_follow()
         with self.lock:
+            if self.full_proc and self.full_proc.poll() is None:
+                self.full_proc.kill()                    # the whole log of the container you left
             self.gen += 1
             self.tail.clear()
             self.full, self.loading = None, False
             self.counts = collections.Counter()
             self.last_stamp, self.asleep, self.hidden_at = None, False, None
+        self.no_logs, self.new_lines, self.started_at, self.no_docker = "", 0, None, False
+        self.restart_wanted = False                      # (a restart seen for the container you left)
         if not name:
             return
         self.follow_from(["--tail", str(TAIL)])
         if self.filtering():
             self.load_full()
+        gen = self.gen
+
+        def check():                                   # in a thread: a slow daemon must not freeze the pane
+            running, started, driver = self.state(name)
+            proc = None
+            with self.lock:
+                if gen != self.gen:
+                    return
+                self.started_at = started
+                if driver == "none":                   # nothing docker logs can read: stop following
+                    self.no_logs = "none (no logs kept)"
+                    proc, self.proc = self.proc, None    # this container's follow, taken under the lock:
+            if proc:                                     # never the next container's
+                proc.kill()
+                proc.wait()
+            self.wake()
+        threading.Thread(target=check, daemon=True).start()
 
     def follow_from(self, where):
-        self.proc = subprocess.Popen(["docker", "logs", "-f", "--timestamps", *where, self.key],
-                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                     preexec_fn=die_with_parent)
+        try:
+            self.proc = subprocess.Popen(["docker", "logs", "-f", "--timestamps", *where, self.key],
+                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                         preexec_fn=die_with_parent)
+        except OSError:                              # no docker any more (Docker Desktop quit on WSL)
+            self.proc, self.no_docker = None, True
+            return
         threading.Thread(target=self.follow, args=(self.proc, self.gen, self.last_stamp), daemon=True).start()
 
     def stop_follow(self):
@@ -148,7 +236,9 @@ class Logs(Viewer):
     def follow_on(self):
         """Follow again from the newest line received: docker's --since includes that line,
         so lines up to its stamp are skipped. Newer ones also reach a whole-log read."""
-        self.follow_from(["--since", self.last_stamp] if self.last_stamp else ["--tail", str(TAIL)])
+        self.stop_follow()                               # (never two follows: the old one would block)
+        self.follow_from(["--since", self.last_stamp, "--tail", str(BACK_MAX)] if self.last_stamp
+                         else ["--tail", str(TAIL)])
 
     def sight(self, visible):
         now = time.monotonic()
@@ -163,38 +253,54 @@ class Logs(Viewer):
         if self.asleep:
             self.asleep = False
             self.follow_on()
-        elif self.key and self.proc and self.proc.poll() is not None and now - self.checked_at > 2:
-            # the container stopped (restart, crash): go on once it runs again
+        elif self.key and not self.no_logs and self.proc and self.proc.poll() is not None and now - self.checked_at > 3:
+            # `docker logs -f` ended: go on only once the container really started again (a new
+            # StartedAt), else a follow that ends at once would restart forever
             self.checked_at = now
-            try:                                         # a stuck daemon must not freeze the pane
-                running = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", self.key],
-                                         capture_output=True, text=True, timeout=5).stdout.strip() == "true"
-            except (subprocess.TimeoutExpired, OSError):
-                running = False
-            if running:
-                with self.lock:
-                    self.tail.append((None, STARTED, "", "", None))
-                    self.dirty = True
-                self.follow_on()
+            gen, name = self.gen, self.key
+
+            def check():                                # in a thread, like start()'s
+                running, started, _ = self.state(name)
+                if running and started and started != self.started_at:
+                    with self.lock:
+                        if gen != self.gen:              # you went to another container meanwhile
+                            return
+                        self.started_at = started
+                        self.tail.append((None, STARTED, "", "", None))
+                        self.dirty = True
+                        self.restart_wanted = True
+                    self.wake()
+            threading.Thread(target=check, daemon=True).start()
+        if getattr(self, "restart_wanted", False):
+            self.restart_wanted = False
+            self.follow_on()
 
     def follow(self, proc, gen, after):
         after = stamp_key(after) if after else None
         for raw in iter(proc.stdout.readline, b""):
-            e = self.entry(raw.decode("utf-8", "replace").rstrip("\n"))
+            try:
+                e = self.entry(raw.decode("utf-8", "replace").rstrip("\n"))
+            except Exception:                            # a line no format understands: shown as it is
+                text = raw.decode("utf-8", "replace").rstrip("\n")
+                e = (None, clean(text), text.lower(), text, None)
             if after:
                 if e[4] and stamp_key(e[4]) <= after:
                     continue                             # already shown before the pause
                 after = None
             with self.lock:
                 if gen != self.gen or proc is not self.proc:
+                    proc.kill()                          # not wanted any more: never left blocked on a full pipe
                     return
                 if e[4]:
                     self.last_stamp = e[4]
+                if not self.following:
+                    self.new_lines += 1
                 self.tail.append(e)
                 if self.full is not None and (not e[4] or stamp_key(e[4]) > self.full_upto):
                     if len(self.full) == FULL_MAX:       # kept at FULL_MAX lines: the oldest goes
                         self.counts[self.full[0][0]] -= 1
                     self.full.append(e)                  # a new line after the whole log was read
+                    self.full_seq += 1
                     self.counts[e[0]] += 1
                 self.dirty = True
         with self.lock:
@@ -210,11 +316,49 @@ class Logs(Viewer):
         gen, gen_full, name = self.gen, self.gen_full, self.key
 
         def work():
-            out = subprocess.run(["docker", "logs", "--timestamps", "--tail", str(FULL_MAX), *self.since_args(), name],
-                                 capture_output=True)
-            lines = (out.stdout + out.stderr).decode("utf-8", "replace").splitlines()
+            # Popen, so changing container (or range) kills a read no longer wanted
+            try:
+                proc = subprocess.Popen(["docker", "logs", "--timestamps", "--tail", str(FULL_MAX), *self.since_args(),
+                                         name], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                        stdin=subprocess.DEVNULL, preexec_fn=die_with_parent)
+            except OSError:
+                with self.lock:
+                    self.loading = False
+                return
+            with self.lock:
+                if gen != self.gen or gen_full != self.gen_full:     # already not wanted: stop it
+                    proc.kill()
+                    proc.wait()
+                    return
+                old = self.full_proc
+                self.full_proc = proc
+            if old is not None and old.poll() is None and old is not proc:
+                old.kill()                                # an older read (another container)
+            # read as it comes, keeping the newest lines that fit FULL_BYTES (not all at once)
+            kept, size, total = collections.deque(), 0, 0
+            for raw in proc.stdout:
+                kept.append(raw)
+                size += len(raw)
+                total += 1
+                while size > FULL_BYTES and len(kept) > 1:
+                    size -= len(kept.popleft())
+                if total % 2000 == 0 and (gen != self.gen or gen_full != self.gen_full):
+                    proc.kill()                           # not wanted any more
+                    break
+            proc.wait()
+            if gen != self.gen or gen_full != self.gen_full:
+                return
+            lines = [raw.decode("utf-8", "replace").rstrip("\r\n") for raw in kept]
+            del kept
+            self.cut_off = len(lines) < total or total >= FULL_MAX
+
+            def safe(l):
+                try:
+                    return self.entry(l)
+                except Exception:
+                    return (None, clean(l), l.lower(), l, None)
             # stdout and stderr come one after the other: docker's stamps put them back in order
-            entries = sorted((self.entry(l) for l in lines), key=lambda e: stamp_key(e[4]) if e[4] else "")
+            entries = sorted((safe(l) for l in lines), key=lambda e: stamp_key(e[4]) if e[4] else "")
             with self.lock:
                 if gen == self.gen and gen_full == self.gen_full:
                     # lines arriving live from now on are added if newer than the read
@@ -227,6 +371,7 @@ class Logs(Viewer):
                     entries = collections.deque(entries, maxlen=FULL_MAX)
                     counts = collections.Counter(e[0] for e in entries)
                     self.full, self.counts, self.loading, self.dirty = entries, counts, False, True
+                    self.full_seq = len(entries)
             self.wake()
         threading.Thread(target=work, daemon=True).start()
 
@@ -238,6 +383,8 @@ class Logs(Viewer):
         with self.lock:
             self.since, self.full, self.loading = since, None, False
             self.gen += 1                                # drop a full read still running
+            if self.full_proc and self.full_proc.poll() is None:
+                self.full_proc.kill()
         self.gen_follow_restart()
 
     def gen_follow_restart(self):
@@ -247,35 +394,82 @@ class Logs(Viewer):
             self.load_full()
         self.rebuild()
 
+    def scroll(self, delta):
+        super().scroll(delta)
+        if self.following:                       # back at the end: show what arrived meanwhile
+            self.new_lines = 0
+            if self.dirty:
+                self.rebuild()
 
     def wake(self):
-        os.kill(os.getpid(), __import__("signal").SIGWINCH)
+        """From the reading threads: an event of its own for the loop (see viewer.run)."""
+        self.screen.poke(b"r")
 
     # ─── what to show ───
     def filtering(self):
         return bool(self.query.strip()) or BASE_TABS[self.tab] != "All" or bool(self.since)
 
+    def pick(self, terms, wanted):
+        """The lines of the whole log that pass the search and the tab, as (number, entry) · worked
+        out from the last answer when it can be: new lines only (they come every second on a busy
+        container), or only the last matches when the search just got longer (typing a word).
+        Filtering 100k lines from scratch takes ~20 ms."""
+        query = (" ".join(terms), wanted)
+        last = self._pick
+        with self.lock:
+            full, seq = self.full, self.full_seq
+            if full is None:
+                return []
+            first = seq - len(full)                      # the number of the oldest line still kept
+            if last and last[1] is full and last[0] == query and seq - last[2] <= len(full):
+                fresh = [(n, full[n - first]) for n in range(last[2], seq)]
+                src, keep = fresh, last[3]
+            elif last and last[1] is full and last[2] == seq and last[0][1] == wanted \
+                    and query[0].startswith(last[0][0]):
+                src, keep = last[3], []                  # a longer search finds a part of what the shorter one did
+            else:
+                src, keep = None, []
+                every = list(full)
+        if src is None:                                  # from scratch
+            src = zip(range(first, first + len(every)), every)
+        ok = passing(src, terms, wanted)
+        picked = keep + ok if keep else ok
+        if picked and picked[0][0] < first:              # lines gone from the front (FULL_MAX)
+            picked = [x for x in picked if x[0] >= first]
+        self._pick = (query, full, seq, picked)
+        return picked
+
     def rebuild(self):
         _, w = self.screen.size()
         terms = self.query.lower().split()
         wanted = SEVERITY[BASE_TABS[self.tab]]
-        with self.lock:
-            if self.filtering():
-                src = list(self.full) if self.full is not None else []
-            else:
-                src = list(self.tail)[-TAIL:]
-            self.dirty = False
         if self.filtering():
-            picked = [e for e in src if (not wanted or e[0] in wanted) and all(t in e[2] for t in terms)]
+            with self.lock:
+                self.dirty = False
+            picked = self.pick(terms, wanted)
             self.matches = len(picked)
-            src = picked[-SHOW_MAX:]
+            src = [e for _, e in picked[-SHOW_MAX:]]
+        else:
+            with self.lock:
+                src = list(self.tail)[-TAIL:]
+                self.dirty = False
         width = max(10, w - 3)
+        # each line is marked and wrapped once for these terms and this width: a rebuild with a few
+        # new lines lays out only those (marking 2000 matches took most of a rebuild's time)
+        laid, how = self._laid
+        if how != (tuple(terms), width):
+            laid = {}
+        now = {}
         self.entries = src
         self.lines, self.src = [], []
         for n, e in enumerate(src):
-            pieces = wrap(mark(e[1], terms), width, indent="      ")
+            pieces = laid.get(e)
+            if pieces is None:
+                pieces = wrap(mark(e[1], terms), width, indent="      ")
+            now[e] = pieces
             self.lines += pieces
             self.src += [n] * len(pieces)
+        self._laid = (now, (tuple(terms), width))
         if self.sel and self.sel[1] >= len(self.lines):
             self.sel = None
         self.clamp()
@@ -295,22 +489,28 @@ class Logs(Viewer):
 
     def tick(self):
         self.poll()
-        if not self.visible:
+        if not self.visible or self.menu:            # a menu is open: its rows stay the ones it was opened on
             return
-        if self.dirty or self.pending:
+        # paused (scrolled up): what you read stays where it is · new lines wait for End
+        if self.pending:
             self.pending = False
             self.rebuild()
+        elif self.dirty and self.following:
+            self.rebuild()                           # new lines: only they are filtered and laid out (pick)
 
     def switch(self, n):
         self.tab = n % len(BASE_TABS)
         if self.filtering():
             self.load_full()
-        self.top, self.following = 0, True
+        self.top, self.following, self.new_lines = 0, True, 0
         self.rebuild()
 
     def draw(self):
         width = self.screen.size()[1]
-        if self.dirty or width != getattr(self, "_built_w", None):
+        self.clear_span = None                       # status() sets it again when the ✕ is drawn
+        # new lines are rebuilt on the tick (every interval), not on every event: with a filter on a
+        # long log a rebuild takes tens of ms, and pointer moves come dozens a second
+        if width != getattr(self, "_built_w", None):
             self._built_w = width
             self.rebuild()
         # tab labels carry their counts once the whole log has been read
@@ -326,18 +526,29 @@ class Logs(Viewer):
             return f"{YELLOW}{label} {RESET}{TEXT}{text}{RESET}{YELLOW}▏{RESET} {DIM}enter · esc cancels"
         if not self.key:
             return ""
+        if getattr(self, "no_docker", False):
+            return f"{YELLOW}the docker command is not there (Docker stopped?): pick the container again once it is back"
+        if self.no_logs:
+            return f"{YELLOW}this container logs to {self.no_logs}: docker logs cannot read it"
         rng = next((l for l, v in RANGES if v == self.since), "")
         search = (f"{YELLOW}{ICON_CLOCK} {rng.lower()}{RESET} {DIM}·{RESET} " if self.since else "") + \
                  f"{DIM}search ❯ {RESET}{TEXT}{self.query}{RESET}{YELLOW}▏{RESET} "
+        self.clear_span = None
+        if self.query:                               # a ✕ that clears the search, like the lists' filter
+            x = 2 + vlen(search)                     # the status row starts at column 2 (Viewer.draw)
+            self.clear_span = (x, x + 2)
+            search += f"{SURFACE}{SUB} ✕ {RESET} "
         if self.pending:
             state = f"{YELLOW}searching… "
         elif self.filtering():
             if self.full is None:
                 state = f"{YELLOW}reading the whole log… "
             else:
-                state = f"{GREEN}{self.matches} of {len(self.full)} lines "
+                cut = " (the newest)" if getattr(self, "cut_off", False) else ""
+                state = f"{GREEN}{self.matches} of {len(self.full):,} lines{cut} "
         else:
-            state = f"{GREEN}● live " if self.following else f"{YELLOW}⏸ paused · End follows "
+            new = f" · {self.new_lines} new" if self.new_lines else ""
+            state = f"{GREEN}● live " if self.following else f"{YELLOW}⏸ paused{new} · End follows "
         return search + state
 
     # typing shows at once; the (whole-log) filter runs on the next tick, once you pause
@@ -349,7 +560,7 @@ class Logs(Viewer):
             return
         self.query += text
         self.load_full()
-        self.top, self.following, self.pending = 0, True, True
+        self.top, self.following, self.pending, self.new_lines = 0, True, True, 0
 
     def on_key(self, name):
         if self.prompt:
@@ -372,9 +583,21 @@ class Logs(Viewer):
                 self.switch(0)                       # Esc with no search: back to All
                 return
             self.query = "" if name != "backspace" else self.query[:-1]
-            self.top, self.following, self.pending = 0, True, True
+            self.top, self.following, self.pending, self.new_lines = 0, True, True, 0
             return
         super().on_key(name)
+        if name == "end":                            # following again: what arrived meanwhile
+            self.new_lines = 0
+            self.rebuild()
+            self.top = self.max_top
+
+
+    def on_mouse(self, b, x, y, released):
+        span = getattr(self, "clear_span", None)
+        if b == 0 and not released and y == 2 and span and span[0] <= x <= span[1]:
+            self.query, self.top, self.following, self.pending, self.new_lines = "", 0, True, True, 0
+            return
+        super().on_mouse(b, x, y, released)
 
 
 class SavingLogs(Logs):
@@ -396,7 +619,8 @@ class SavingLogs(Logs):
 
     def default_path(self, whole):
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M")
-        what = "" if whole else ("-" + "-".join(self.query.split())[:30] if self.query.strip() else
+        words = re.sub(r"[^\w.-]+", "-", "-".join(self.query.split()))[:30]      # no / in a file name
+        what = "" if whole else ("-" + words if self.query.strip() else
                                  "-" + BASE_TABS[self.tab].lower() if BASE_TABS[self.tab] != "All" else "-shown")
         path = os.path.join(LOG_DIR, f"{self.key}-{stamp}{what}.log")
         return "~" + path[len(os.path.expanduser("~")):] if path.startswith(os.path.expanduser("~")) else path
@@ -427,7 +651,8 @@ class SavingLogs(Logs):
         if not whole:
             lines = [e[3] for e in self.entries if e[3]]
             try:
-                with open(target, "w", encoding="utf-8") as f:
+                with open(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
+                    os.fchmod(f.fileno(), 0o600)              # 600: logs can hold secrets (an old 644 file too)
                     f.write("\n".join(lines) + "\n")
                 self.flash(f"{ICON_SAVE} saved {len(lines)} lines to {short}")
             except OSError as e:
@@ -438,8 +663,10 @@ class SavingLogs(Logs):
 
         def work():
             try:
-                with open(target, "wb") as f:
-                    res = subprocess.run(["docker", "logs", *since, name], stdout=f, stderr=subprocess.STDOUT)
+                with open(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as f:
+                    os.fchmod(f.fileno(), 0o600)
+                    res = subprocess.run(["docker", "logs", *since, name], stdout=f, stderr=subprocess.STDOUT,
+                                         stdin=subprocess.DEVNULL)
                 with open(target, "rb") as f:
                     n = sum(1 for _ in f)
                 self.flash(f"{ICON_SAVE} saved {n} lines to {short}" if res.returncode == 0

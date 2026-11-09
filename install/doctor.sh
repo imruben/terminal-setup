@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2088  # "~/…" in messages is text to show, not a path
 # ═══════════════════════════════════════════════════════════════
 #  terminal-setup · check that everything is in place (run by install.sh, or alone:
 #  bash install/doctor.sh). ✔ fine · ✘ needed and missing / too old · – optional
 # ═══════════════════════════════════════════════════════════════
 
-REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+REPO=$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 . "$REPO/install/lib.sh"
+[ -e "$(repo_path "$REPO")" ] && REPO=$(repo_path "$REPO")    # a folder with spaces: its link
 . "$REPO/install/versions.sh"
 detect_platform
 problems=0
@@ -28,6 +30,7 @@ optional() {
        /home/linuxbrew/.linuxbrew/bin/brew 2>/dev/null)" ]; }; then ok "$1 ${D}(optional: $2)${R}"; else info "${D}– $1 not installed (optional: $2)${R}"; fi
 }
 
+printf '\n  %sterminal-setup %s%s %s· %s%s\n' "$B" "$(repo_version "$REPO")" "$R" "$D" "$(tilde "$REPO")" "$R"
 printf '\n  %sTools%s\n' "$B" "$R"
 need zsh
 need tmux "$TMUX_MIN" "tmux -V"
@@ -44,7 +47,18 @@ need jq
 need entr "" "entr -h 2>&1 | head -1; echo 0"
 need ansifilter
 need delta
-optional docker "the docker tab"
+need rg
+need fd
+need zoxide
+need lazygit "" "lazygit --version | sed 's/.*version=//'"
+need tldr
+need shellcheck
+if have yq && ! yq --version 2>&1 | grep -q mikefarah; then
+  fail "yq is $(command -v yq), not mikefarah/yq (run ./install.sh)"; problems=$((problems + 1))
+else need yq; fi
+optional docker "the docker tab, Docker in the disk tab's Cleanup"
+optional ssh "the ssh tab"
+optional tig "tig from the git tab (lazygit is the default)"
 optional gh "GitHub from the shell"
 [ "$OS" = macos ] || optional snap "snap packages in the packages tab"
 optional brew "Homebrew packages in the packages tab"
@@ -56,9 +70,11 @@ fi
 
 printf '\n  %sConfig%s\n' "$B" "$R"
 . "$REPO/install/config.sh"
-for f in .zshrc .tmux.conf; do
-  case $f in .zshrc) want=$(block_zsh) ;; *) want=$(block_tmux) ;; esac
-  if has_block "$HOME/$f" && [ "$(block_in "$HOME/$f")" = "$want" ]; then ok "~/$f loads terminal-setup"
+for f in .zshrc .tmux.conf .zshenv; do
+  case $f in .zshrc) want=$(block_zsh) ;; .zshenv) want=$(block_zshenv) ;; *) want=$(block_tmux) ;; esac
+  case $f in .zshenv) what="skips the system's compinit (zsh/zshrc runs it)" ;; *) what="loads terminal-setup" ;; esac
+  if has_block "$HOME/$f" && [ "$(block_in "$HOME/$f")" = "$want" ]; then ok "~/$f $what"
+  elif [ $f = .zshenv ]; then fail "~/$f does not skip the system's compinit (run ./install.sh)"; problems=$((problems + 1))
   elif has_block "$HOME/$f"; then fail "~/$f loads terminal-setup from another folder (run ./install.sh)"; problems=$((problems + 1))
   else fail "~/$f does not load terminal-setup (run ./install.sh)"; problems=$((problems + 1)); fi
 done
@@ -67,7 +83,7 @@ for f in $(links_into_repo); do
 done
 
 printf '\n  %sPlugins%s\n' "$B" "$R"
-while read -r name url commit; do
+while read -r name _; do
   case $name in tmux/*) dir=$HOME/.tmux/plugins/${name#tmux/} ;; zsh/*) dir=$HOME/.zsh/plugins/${name#zsh/} ;; esac
   if [ -d "$dir/.git" ]; then ok "${name#*/}"; else fail "${name#*/} is missing (run ./install.sh)"; problems=$((problems + 1)); fi
 done < <(grep -v '^#' "$REPO/install/plugins.lock")
@@ -78,7 +94,9 @@ font_plan
 case $FONT_TODO in
   none)    ok "JetBrainsMono Nerd Font is installed" ;;
   remote)  info "${D}– no desktop here: the font belongs on the computer you connect from${R}" ;;
-  windows) fail "JetBrainsMono Nerd Font is not installed in Windows (see windows/windows-terminal.md)"; problems=$((problems + 1)) ;;
+  # (a warning, not a problem: it is installed in Windows, which the install cannot do from
+  # here, so `make install` would fail until then although everything else is fine)
+  windows) warn "JetBrainsMono Nerd Font is not installed in Windows: winget install --id DEVCOM.JetBrainsMonoNerdFont (windows/windows-terminal.md)" ;;
   linux)   fail "JetBrainsMono Nerd Font is not installed (run ./install.sh)"; problems=$((problems + 1)) ;;
   macos)   fail "JetBrainsMono Nerd Font is not installed (run ./install.sh: the Brewfile has it)"; problems=$((problems + 1)) ;;
 esac

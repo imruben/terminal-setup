@@ -13,7 +13,13 @@ if [[ -n $TMUX_OPEN_URL ]]; then
   exec "$TMUX_OPEN_URL" "$target"
 elif [[ -n $WSL_DISTRO_NAME || -e /proc/sys/fs/binfmt_misc/WSLInterop || -e /proc/sys/fs/binfmt_misc/WSLInterop-late ]]; then
   [[ -e $target ]] && target=$(wslpath -w "$target")     # a Linux path → \\wsl$\… for Windows
-  /mnt/c/Windows/explorer.exe "$target"
+  # C:\Windows wherever WSL mounts C: (/mnt/c, or another automount root in /etc/wsl.conf)
+  explorer=$(command -v explorer.exe) || explorer="$(wslpath -u 'C:\Windows' 2>/dev/null)/explorer.exe"
+  if [[ ! -x $explorer ]]; then
+    command -v wslview >/dev/null && exec wslview "$target"
+    echo "open.sh: Windows' explorer.exe was not found" >&2; exit 1
+  fi
+  "$explorer" "$target"
   exit 0                                                  # explorer.exe always exits with 1
 elif [[ $OSTYPE == darwin* ]]; then
   exec open "$target"

@@ -24,7 +24,7 @@ import pkgsrc
 import tmuxlink
 from pkgsrc import SourcesPane, human, note_key, pkg_popup, read_notes, write_notes
 from table import Column, TableApp, run
-from tui import DIM, SUB, TEXT, YELLOW
+from tui import DIM, RESET, SUB, TEXT, YELLOW
 
 ICON = dict(note="\U000F03EB", info="\U000F02FD", files="\U000F0214", copy="\U000F018F", remove="\U000F0A7A")
 
@@ -51,18 +51,20 @@ class Packages(SourcesPane, TableApp):
     def fetch(self):
         notes, rows, self.error = read_notes(), [], ""
         for s in pkgsrc.sources():
-            if s.name == "brew":                    # ~0.5 s and more with many formulae: in the background
-                found = self.bg.get(("brew", "mine"), s.mine, 60) or []
-            else:
-                found = s.mine()
-                self.error = self.error or s.error
+            # every source in the background (apt-mark + dpkg-query, the snap socket, brew): the pane
+            # never waits for one · a source failing keeps what it had (Background) and never
+            # empties the others
+            found = self.bg.get((s.name, "mine"), s.mine, 60) or []
+            self.error = self.error or s.error
             for p in found:
                 rows.append({**p, "id": f"{s.name}:{p['name']}", "src": s.name,
                              "why": notes.get(note_key(s.name, p["name"]), "")})
         return rows
 
     def summary(self):
-        return self.loading_note()
+        apt = pkgsrc.source("apt")
+        base = f"{YELLOW}no base list: all manual apt shown{RESET}" if apt and apt.error else ""
+        return " · ".join(t for t in (base, self.loading_note()) if t)
 
     def row_colour(self, r):
         return TEXT if r["why"] else SUB
@@ -74,10 +76,6 @@ class Packages(SourcesPane, TableApp):
         return (f"{why}{DIM}{r['src']} {r.get('version', '')} · {len(self.all)} packages · "
                 f"{sum(1 for x in self.all if x['why'])} with notes{base}")
 
-    def footer(self, y):
-        if self.error and not (self.ask or self.prompt or self.msg):
-            return f" {YELLOW}{self.error}"
-        return super().footer(y)
 
     def menu_title(self, r):
         return f"{r['name']} · {r['src']}"
@@ -94,7 +92,7 @@ class Packages(SourcesPane, TableApp):
 
     def selected(self, r):
         if r:
-            tmuxlink.put("@pkg-selected", r["id"])
+            tmuxlink.publish("@pkg-selected", r["id"])
 
     def on_tick(self):
         if self.changed():                         # a package command ran in a popup: re-read
@@ -110,7 +108,7 @@ class Packages(SourcesPane, TableApp):
             else:
                 notes.pop(key, None)
             write_notes(notes)
-            tmuxlink.put("@pkgs-changed", str(time.time_ns()))     # the other panes show it too
+            tmuxlink.put("@pkgs-notes", str(time.time_ns()))       # the other panes show it (no source asked again)
             self.flash(f"note saved for {r['name']}" if text else f"note removed for {r['name']}")
             self.reload()
         self.ask_text(f"Why is {r['name']} installed?", r["why"], save)
@@ -123,8 +121,7 @@ class Packages(SourcesPane, TableApp):
                      lambda: pkg_popup(self, f"uninstall · {r['name']} · {r['src']}", s.remove(r["name"])), r)
 
     def copy(self, text):
-        tmuxlink.copy(text)
-        self.flash(f"copied: {text}")
+        self.flash(f"copied: {text}" if tmuxlink.copy(text) else "could not copy", ok=True)
 
 
 if __name__ == "__main__":

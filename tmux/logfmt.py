@@ -14,7 +14,7 @@ import datetime
 import json
 import re
 
-from tui import ANSI, BLUE, DIM, GREEN, RED, RESET, SUB, TEXT, YELLOW, bg, fg
+from tui import ANSI, BLUE, DIM, GREEN, RED, RESET, SGR_CODE, SUB, TEXT, YELLOW, bg, fg
 
 BADGE = {"error": bg("#f38ba8") + fg("#11111b") + "ERR ",
          "warning": bg("#f9e2af") + fg("#11111b") + "WARN",
@@ -28,7 +28,8 @@ LEVEL_WORDS = {"emergency": "error", "emerg": "error", "alert": "error", "critic
                "debug": "debug", "trace": "debug", "verbose": "debug", "dbg": "debug"}
 REDIS = re.compile(r"^\d+:[A-Z] (\d+ \w{3} \d{4} [\d:.]+) ([.\-*#]) (.*)$")
 REDIS_LEVEL = {".": "debug", "-": "debug", "*": "info", "#": "warning"}
-POSTGRES = re.compile(r"^(\d{4}-\d\d-\d\d [\d:.]+) \w+ \[\d+\]\S* ?(?:\S*@\S* )?(\w+):\s+(.*)$")
+# (no @ before the user@db one: overlapping \S* runs took over a minute on "[1]a@a@a@…")
+POSTGRES = re.compile(r"^(\d{4}-\d\d-\d\d [\d:.]+) \w+ \[\d+\][^\s@]* ?(?:[^\s@]*@\S* )?(\w+):\s+(.*)$")
 BRACKET = re.compile(r"^(\d{4}-\d\d-\d\d[T ][\d:.]+(?:[+-]\d\d:?\d\d|Z)?)\s+\[(\w+)\]\s+(?:<[\d.]+>\s+)?(.*)$")
 SYMFONY = re.compile(r"^\[([^\]]+)\]\s+([\w.-]+)\.([A-Z]+):\s+(.*)$")
 LOGFMT_PAIR = re.compile(r'(\w[\w.]*)=("(?:[^"\\]|\\.)*"|\S+)')
@@ -79,17 +80,30 @@ def http_line(d):
     return f"{TEXT}{method} {uri}{RESET} {DIM}→{RESET} {status_colour(status)}{status}{RESET}{DIM}{ms}{size}{RESET}"
 
 
+NUMERIC_LEVEL = [(50, "error"), (40, "warning"), (30, "info"), (20, "debug"), (0, "debug")]   # pino / bunyan
+
+
+def json_level(d):
+    """The level of a JSON line: level / lvl / severity / levelname / level_name / ECS log.level,
+    a word or pino's and bunyan's numbers (10 trace … 60 fatal)."""
+    log = d.get("log") if isinstance(d.get("log"), dict) else {}
+    raw = next((d[k] for k in ("level", "lvl", "severity", "levelname", "level_name") if d.get(k) not in (None, "")),
+               log.get("level", ""))
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return next((name for floor, name in NUMERIC_LEVEL if raw >= floor), "debug")    # -1, NaN: lowest
+    return LEVEL_WORDS.get(str(raw).lower())
+
+
 def from_json(d, stamp=None):
-    lvl_raw = str(d.get("level") or d.get("lvl") or d.get("severity") or d.get("level_name") or "").lower()
-    lvl = LEVEL_WORDS.get(lvl_raw)
+    lvl = json_level(d)
     when = next((d[k] for k in ("ts", "time", "timestamp", "@timestamp", "datetime") if k in d), None)
     logger = d.get("logger") or d.get("channel") or d.get("name") or ""
     msg = d.get("msg") or d.get("message") or ""
     if str(logger).startswith("http.log.access") and isinstance(d.get("request"), dict):
         body, logger = http_line(d), "http"
     else:
-        skip = {"level", "lvl", "severity", "level_name", "ts", "time", "timestamp", "@timestamp", "datetime",
-                "logger", "channel", "name", "msg", "message"}
+        skip = {"level", "lvl", "severity", "level_name", "levelname", "ts", "time", "timestamp", "@timestamp",
+                "datetime", "logger", "channel", "name", "msg", "message"}
         extra = []
         for k, v in d.items():
             if k in skip:
@@ -132,9 +146,11 @@ def parse(line, stamp=None):
     if m and m[2].lower() in LEVEL_WORDS:
         lvl = LEVEL_WORDS[m[2].lower()]
         return lvl, f"{badge(lvl)} {DIM}{short_time(stamp or m[1])}{RESET} {TEXT}{m[3]}{RESET}"
-    if "level=" in s or "msg=" in s:                       # logfmt
-        pairs = dict((k, v.strip('"')) for k, v in LOGFMT_PAIR.findall(s))
-        if pairs.get("msg") or pairs.get("level"):
+    if "level=" in s or "msg=" in s:                       # logfmt: only when the line is (mostly) pairs
+        found = LOGFMT_PAIR.findall(s)
+        pairs = dict((k, v.strip('"')) for k, v in found)
+        covered = sum(len(k) + len(v) + 1 for k, v in found)
+        if (pairs.get("msg") or pairs.get("level")) and covered >= 0.8 * len(s.replace(" ", "")):
             lvl = LEVEL_WORDS.get(pairs.get("level", "").lower())
             when = pairs.get("time") or pairs.get("ts")
             extra = " ".join(f"{k}={v}" for k, v in pairs.items() if k not in ("time", "ts", "level", "msg"))
@@ -149,45 +165,67 @@ def parse(line, stamp=None):
     return lvl, (f"{badge(lvl)} " + (f"{DIM}{short_time(stamp or when)}{RESET} " if stamp or when else "") + f"{colour}{rest}{RESET}")
 
 
+MARK = bg("#f9e2af") + fg("#11111b")
+SGR_RESETS = ("\x1b[0m", "\x1b[m")
+
+
 def mark(line, terms):
-    """Highlight every term (case-insensitive) in a coloured line, keeping its colours."""
+    """Highlight every term (case-insensitive) in a coloured line, keeping its colours (and links) ·
+    the text between codes is cut at the matches a slice at a time: a search lays out thousands of lines."""
     if not terms:
         return line
     plain = ANSI.sub("", line)
     # lower-cased one character at a time: some grow ("İ" → "i̇"), and positions must match plain
-    low = "".join(c if len(c.lower()) != 1 else c.lower() for c in plain)
+    low = plain.lower() if plain.isascii() else "".join(c if len(c.lower()) != 1 else c.lower() for c in plain)
     spans = []
     for t in terms:
-        start = low.find(t)
-        while t and start >= 0:
+        start = low.find(t) if t else -1
+        while start >= 0:
             spans.append((start, start + len(t)))
             start = low.find(t, start + len(t))
     if not spans:
         return line
-    hit = [False] * len(plain)
-    for a, b in spans:
-        for i in range(a, b):
-            hit[i] = True
-    out, vis, i, last_sgr, on = [], 0, 0, "", False
-    MARK = bg("#f9e2af") + fg("#11111b")
-    while i < len(line):
-        m = ANSI.match(line, i)
-        if m:
-            last_sgr = m.group()
-            if not on:
-                out.append(last_sgr)
-            i = m.end()
-            continue
-        want = hit[vis] if vis < len(hit) else False
-        if want and not on:
-            out.append(MARK)
-            on = True
-        elif not want and on:
-            out.append(RESET + last_sgr)
-            on = False
-        out.append(line[i])
-        vis += 1
-        i += 1
+    spans.sort()
+    merged = [list(spans[0])]
+    for a, b in spans[1:]:
+        if a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    out, active, on, vis, pos, k = [], [], False, 0, 0, 0
+    for m in [*ANSI.finditer(line), None]:
+        end = m.start() if m else len(line)
+        i, n = 0, end - pos
+        while i < n:
+            at = vis + i
+            while k < len(merged) and merged[k][1] <= at:
+                k += 1
+            if k < len(merged) and merged[k][0] <= at:          # inside a match
+                stop = min(n, merged[k][1] - vis)
+                if not on:
+                    out.append(MARK)
+                    on = True
+            else:
+                stop = min(n, merged[k][0] - vis) if k < len(merged) else n
+                if on:                                           # out of it: the line's own colours again
+                    out.append(RESET + "".join(active))
+                    on = False
+            out.append(line[pos + i:pos + stop])
+            i = stop
+        vis += n
+        if m is None:
+            break
+        g = m.group()
+        if SGR_CODE.fullmatch(g):
+            if g in SGR_RESETS:
+                active = []
+            else:
+                active.append(g)
+            if not on:                                           # inside a match its colours stay
+                out.append(g)
+        else:
+            out.append(g)                                        # links and the rest: kept
+        pos = m.end()
     if on:
         out.append(RESET)
     return "".join(out)
