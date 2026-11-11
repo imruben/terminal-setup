@@ -504,6 +504,9 @@ vps() {
   fi
 }
 
+# every shortcut, searchable (tmux/guide.zsh) · `keys git` opens it searching for git
+keys() { $TERMINAL_SETUP/tmux/guide.zsh "$@" }
+
 # tmux session manager (tmux/terminal.zsh) · `terminal help`
 terminal() { $TERMINAL_SETUP/tmux/terminal.zsh "$@" }
 

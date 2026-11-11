@@ -281,7 +281,8 @@ help() {
     ${Y}terminal kill-all${X}              kill every session (the system monitor stays)
     ${Y}terminal system${X}                system monitor ${D}(info · processes & ports · packages · docker · opens in new tabs)${X}
     ${Y}terminal system restart${X}        rebuild the system monitor
-    ${Y}terminal guide${X}                 tmux guide ${D}(same as Ctrl+a ? inside tmux)${X}
+    ${Y}terminal guide${X} [words]         every shortcut ${D}(same as Ctrl+a ? inside tmux, or ${X}${Y}keys${X}${D})${X}
+    ${Y}keys${X} [words]                   the same guide · ${D}keys git: opens searching for git${X}
     ${Y}terminal files${X}                 every file the install put on this machine, and what it is for
     ${Y}terminal help${X}                  this panel
 
@@ -333,7 +334,7 @@ case "$1" in
                     fi ;;
   rename|mv)        [[ -z $3 ]] && { fail "usage: terminal rename <old> <new>"; exit 1 }
                     rename "$2" "$3" ;;
-  guide|g)          exec $TERMINAL_SETUP/tmux/guide.zsh ;;
+  guide|g)          exec $TERMINAL_SETUP/tmux/guide.zsh "${@:2}" ;;
   files|f)          exec bash $TERMINAL_SETUP/install/files.sh ;;
   system|sys)       exec $TERMINAL_SETUP/tmux/system.sh ${2:-open} ;;
   help|h|-h|--help) help ;;

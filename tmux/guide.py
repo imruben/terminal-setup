@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # ═══════════════════════════════════════════════════════════════
 #  tmux guide · Shortcuts / Mouse / Terminal
-#  Opened by tmux/guide.zsh (Ctrl+a ? / Ctrl+a g / `terminal guide`).
+#  Opened by tmux/guide.zsh (Ctrl+a ? / Ctrl+a g / `terminal guide` / `keys`).
+#  Arguments start it with that search typed in (`keys git`).
 #
 #  Mouse: click a tab on top · hover highlights · click runs it · wheel scrolls
 #         · drag or click the scrollbar on the right
@@ -327,6 +328,9 @@ def main():
 def run_guide():
     with Screen() as screen:
         guide = Guide(screen, load())
+        if len(sys.argv) > 1:                  # `keys git`: open with that search typed in
+            guide.query = " ".join(sys.argv[1:])
+            guide.filter()
         guide.draw()
         for ev in screen.events():
             if ev[0] == "mouse":

@@ -1,7 +1,8 @@
 #!/usr/bin/env zsh
 # ═══════════════════════════════════════════════════════════════
 #  tmux guide · every shortcut in one list
-#  Opened with Ctrl+a ? (or Ctrl+a g) inside tmux, or `terminal guide`.
+#  Opened with Ctrl+a ? (or Ctrl+a g) inside tmux, or `keys` / `terminal guide` in any
+#  shell (`keys git`: starts searching for git).
 #  Shown by tmux/guide.py: hover highlights · click or Enter runs ·
 #  wheel scrolls · type to search · Esc closes.
 #
@@ -161,7 +162,8 @@ terminal list|List the sessions|@shell:$TERMINAL_SETUP/tmux/terminal.zsh list; r
 terminal rename old new|Rename a session|
 terminal kill name|Close a session · asks first (system: restarts it)|
 terminal kill-all|Close every session but the system monitor · asks first, and saves so they stay closed|
-terminal guide|This guide|
+keys · keys git|This guide, from any shell · with words, it opens already searching for them|
+terminal guide|This guide (same as keys)|
 terminal files|Every file the install put on this machine, and what it is for|@shell:bash $TERMINAL_SETUP/install/files.sh | less -R
 terminal help|Every command|@shell:$TERMINAL_SETUP/tmux/terminal.zsh help; read -sk "?press any key"
 @Settings|in your ~/.zshrc, above the terminal-setup line
@@ -188,7 +190,7 @@ render() {
 # ─────────────── Viewer ───────────────
 # tmux/guide.py shows every entry in one list: hover, click to run, wheel
 # scrolls, type to search. The fzf search below is only the fallback without python3.
-[[ $1 != search ]] && (( $+commands[python3] )) && exec python3 -I $TERMINAL_SETUP/tmux/guide.py
+[[ $1 != search ]] && (( $+commands[python3] )) && exec python3 -I $TERMINAL_SETUP/tmux/guide.py "$@"
 
 
 # ─────────────── Search (fzf) ───────────────
@@ -216,7 +218,7 @@ if ! (( $+commands[fzf] )); then
   exit
 fi
 
-query=; [[ $1 == search ]] && query=$2
+query="$*"; [[ $1 == search ]] && query="${*:2}"
 
 # The wheel scrolls the list 3 lines at a time (like a page) instead of moving
 # the cursor one entry; click selects, double-click runs.
