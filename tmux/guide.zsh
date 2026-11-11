@@ -2,7 +2,8 @@
 # ═══════════════════════════════════════════════════════════════
 #  tmux guide · every shortcut in one list
 #  Opened with Ctrl+a ? (or Ctrl+a g) inside tmux, or `keys` / `terminal guide` in any
-#  shell (`keys git`: starts searching for git).
+#  shell (`keys git`: starts searching for git). `keys -p [words]` prints them in the
+#  terminal instead (ghelp: the git ones).
 #  Shown by tmux/guide.py: hover highlights · click or Enter runs ·
 #  wheel scrolls · type to search · Esc closes.
 #
@@ -163,9 +164,24 @@ terminal rename old new|Rename a session|
 terminal kill name|Close a session · asks first (system: restarts it)|
 terminal kill-all|Close every session but the system monitor · asks first, and saves so they stay closed|
 keys · keys git|This guide, from any shell · with words, it opens already searching for them|
+keys -p split|The same entries printed right in the terminal, no popup · keys -p alone: all of them|
 terminal guide|This guide (same as keys)|
 terminal files|Every file the install put on this machine, and what it is for|@shell:bash $TERMINAL_SETUP/install/files.sh | less -R
 terminal help|Every command|@shell:$TERMINAL_SETUP/tmux/terminal.zsh help; read -sk "?press any key"
+@Git & GitHub|zsh/git.zsh · ghelp prints them in the terminal · the gh ones need `gh auth login` once
+ghelp · ghelp pr|These shortcuts, printed in the terminal · with a word, only the ones that mention it|
+gco|Switch branch · pick from local and remote ones, newest first, with their log · gco name works as git checkout|
+gcb name · gsw name|New branch from here · switch to a branch|
+gst · glog|Short status · commit graph|
+ga · gaa · gd · gds|Add · add everything · diff · diff of what is staged|
+gc · gcm "msg" · gca|Commit (shows the diff) · commit with a message · add to the last commit|
+gl · gp · gpf|Pull · push (the first push sets the upstream) · force push, safely (--force-with-lease)|
+gundo|Take back the last commit, keeping its changes staged|
+gclean|Delete branches already merged or whose PR branch is gone · asks first|
+gpr|Pull requests · enter checks one out, ctrl+o opens it in the browser · gpr 123|
+gprc|Push this branch and open its PR from the commits · gprc --draft · gprc --web|
+gprv · gprs · gprm|This PR in the browser (or the repo) · PR status · merge it (asks how)|
+gci|CI of this branch · the PR's checks live until they finish · gci watch follows a run|
 @Settings|in your ~/.zshrc, above the terminal-setup line
 export TERMINAL_NO_AUTOSTART=1|Do not open tmux in new tabs|
 EOF
@@ -186,6 +202,53 @@ render() {
     fi
   done <<< "$GUIDE"
 }
+
+# ─────────────── Print (in the terminal) ───────────────
+# keys -p [words] · ghelp: the entries straight in the terminal, no popup. When the words
+# name a group (git, panes, tabs…) the whole group is printed, otherwise every entry that
+# mentions them all.
+
+matches() {                                  # matches <text>: every one of $words is in it
+  local h=${(L)1} w
+  for w in $words; do [[ $h == *$w* ]] || return 1; done
+}
+
+print_entries() {
+  local -a words=(${(L)@})
+  local keys desc cmd tab= group= gdesc= shown= by_group=0
+  if (( $#words )); then
+    while IFS='|' read -r keys desc cmd; do
+      [[ $keys == @[^@]* ]] && matches "${keys#@}" && { by_group=1; break }
+    done <<< "$GUIDE"
+  fi
+  while IFS='|' read -r keys desc cmd; do
+    case $keys in
+      @@*) tab=${keys#@@}; continue ;;
+      @*)  group=${keys#@} gdesc=$desc; continue ;;
+    esac
+    if (( by_group )); then
+      matches "$group" || continue
+    elif (( $#words )); then
+      matches "$keys $desc $group $tab" || continue
+    fi
+    if [[ $shown != "$tab/$group" ]]; then
+      shown="$tab/$group"
+      print -r -- ""
+      print -r -- "  ${B}${Y}${group}${X}  ${D}${tab:l} · ${gdesc}${X}"
+    fi
+    keys=${${keys//\[/}//\]/}
+    print -r -- "    $(printf "${C}%-26s${X}" "$keys") ${desc}"
+  done <<< "$GUIDE"
+  [[ -z $shown ]] && { print -u2 -r -- "no shortcut mentions: $*"; return 1 }
+  print -r -- ""
+  print -r -- "  ${D}every shortcut, searchable: Ctrl+a ? inside tmux, or keys${X}"
+}
+
+if [[ $1 == (-p|--print) ]]; then
+  shift
+  if [[ -t 1 ]]; then print_entries "$@" | less -RFX; else print_entries "$@"; fi
+  exit $pipestatus[1]
+fi
 
 # ─────────────── Viewer ───────────────
 # tmux/guide.py shows every entry in one list: hover, click to run, wheel

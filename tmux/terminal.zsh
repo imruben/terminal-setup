@@ -284,6 +284,8 @@ help() {
     ${Y}terminal system restart${X}        rebuild the system monitor
     ${Y}terminal guide${X} [words]         every shortcut ${D}(same as Ctrl+a ? inside tmux, or ${X}${Y}keys${X}${D})${X}
     ${Y}keys${X} [words]                   the same guide · ${D}keys git: opens searching for git${X}
+    ${Y}keys -p${X} [words]                print them in the terminal ${D}(no popup)${X}
+    ${Y}ghelp${X}                          git and GitHub shortcuts, in the terminal
     ${Y}terminal files${X}                 every file the install put on this machine, and what it is for
     ${Y}terminal help${X}                  this panel
 

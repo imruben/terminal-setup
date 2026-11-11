@@ -80,6 +80,7 @@ export FZF_ALT_C_OPTS="--preview 'eza --tree --level=2 --color=always {}'"
 # Alias and functions
 source "$TERMINAL_SETUP/zsh/aliases.zsh"
 source "$TERMINAL_SETUP/zsh/functions.zsh"
+source "$TERMINAL_SETUP/zsh/git.zsh"          # git and GitHub shortcuts · ghelp lists them
 
 # Plugins
 [ -f ~/.zsh/plugins/fzf-tab/fzf-tab.plugin.zsh ] && source ~/.zsh/plugins/fzf-tab/fzf-tab.plugin.zsh

@@ -42,6 +42,21 @@ Funciona en **Ubuntu 26.04**, **Ubuntu 24.04**, **WSL** (Ubuntu dentro de Window
   | `fkill` | buscar procesos con fzf y pararlos |
   | `vps [host]` | ssh a tu servidor (en tmux, en su propia ventana). IP y usuario van en tu `~/.ssh/config`, no en el repo: ver [Windows Terminal › VPS](windows/windows-terminal.md#5-una-pestaña-que-entra-en-tu-vps) |
   | `terminal` | gestor de sesiones de tmux (`terminal help`) |
+  | `keys` · `keys -p` | la guía de atajos desde cualquier terminal (`keys git` abre buscando "git") · `-p` la imprime en la terminal, sin ventana |
+
+- Atajos de **git y GitHub** (`zsh/git.zsh`). **`ghelp`** los lista en la terminal (`ghelp pr`: solo los de PR). Los de GitHub necesitan [gh](https://cli.github.com) con `gh auth login`. Los diffs se ven con [delta](https://github.com/dandavison/delta), salvo que tengas tu propio pager en la configuración de git.
+
+  | Comando | Qué hace |
+  |---|---|
+  | `gco` | cambiar de rama: elige entre las locales y remotas con fzf, con su historial (`gco rama` = `git checkout`) |
+  | `gst` · `glog` · `gd` · `gds` | estado corto · gráfico de commits · diff · diff de lo preparado |
+  | `ga` · `gaa` · `gc` · `gcm "msg"` · `gca` | add · add de todo · commit · commit con mensaje · añadir al último commit |
+  | `gcb rama` · `gsw rama` · `gl` · `gp` · `gpf` | rama nueva · cambiar de rama · pull · push (el primero ya pone el upstream) · push forzado seguro |
+  | `gundo` · `gclean` | deshacer el último commit (los cambios se quedan) · borrar ramas ya fusionadas (pregunta antes) |
+  | `gpr` | pull requests con fzf: `Enter` la descarga, `Ctrl+o` la abre en el navegador |
+  | `gprc` | sube la rama y crea su PR con el texto de los commits (`--draft`, `--web`) |
+  | `gprv` · `gprs` · `gprm` | ver la PR en el navegador · estado de tus PR · fusionarla |
+  | `gci` | la CI de la rama: los checks de la PR en vivo hasta que acaban (`gci watch`: seguir una ejecución) |
 
 **tmux** (prefijo `Ctrl+a`)
 - Barra arriba con las pestañas como botones, CPU y RAM, botones de **menú** y **guía**, y la hora. Se adapta al ancho de la ventana.
@@ -237,6 +252,7 @@ Para aplicar los cambios:
 |---|---|
 | alias | `zsh/aliases.zsh` |
 | funciones (`update`, `ports`…) | `zsh/functions.zsh` |
+| atajos de git y GitHub | `zsh/git.zsh` |
 | algo solo de Linux / WSL / macOS | `zsh/platform/<linux, wsl, macos>.zsh` |
 | el prompt | `config/starship.toml` |
 | atajos, colores y barra de tmux | `tmux/tmux.conf` |
@@ -289,6 +305,7 @@ terminal-setup/
 │   ├── zshrc                       lo carga tu ~/.zshrc
 │   ├── aliases.zsh                 alias (los carga zshrc)
 │   ├── functions.zsh               funciones (las carga zshrc)
+│   ├── git.zsh                     atajos de git y GitHub (los carga zshrc)
 │   └── platform/                   lo propio de linux / wsl / macos
 ├── tmux/
 │   ├── tmux.conf                   lo carga tu ~/.tmux.conf
