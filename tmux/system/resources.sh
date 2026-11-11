@@ -20,7 +20,7 @@ B=$'\e[1m' X=$'\e[0m'
 SPARK=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
 NVSMI=$(command -v nvidia-smi || { [[ -x /usr/lib/wsl/lib/nvidia-smi ]] && echo /usr/lib/wsl/lib/nvidia-smi; })
 LINUX=0; [[ -r /proc/stat ]] && LINUX=1
-IS_WSL=0; [[ -n $WSL_DISTRO_NAME || -e /proc/sys/fs/binfmt_misc/WSLInterop ]] && IS_WSL=1
+IS_WSL=0; [[ -n $WSL_DISTRO_NAME || -e /proc/sys/fs/binfmt_misc/WSLInterop || -e /proc/sys/fs/binfmt_misc/WSLInterop-late ]] && IS_WSL=1
 if (( LINUX )); then CORES=$(nproc); else CORES=$(sysctl -n hw.ncpu); fi
 # the interface that reaches the internet (it changes with Wi-Fi, a VPN…)
 iface() {
@@ -59,7 +59,7 @@ cpu_sample() {
     (( dt > 0 && ${prev_total:-0} > 0 )) && cpu=$(( 100 * (dt - (idle - prev_idle)) / dt ))
     prev_total=$total prev_idle=$idle
   else
-    cpu=$(ps -A -o %cpu= | awk -v n="$CORES" '{ s += $1 } END { c = s / n; if (c > 100) c = 100; printf "%d", c }')
+    cpu=$(LC_ALL=C ps -A -o %cpu= | awk -v n="$CORES" '{ s += $1 } END { c = s / n; if (c > 100) c = 100; printf "%d", c }')
   fi
 }
 # memory and swap in KiB: mt total, ma available, st swap total, sf swap free
@@ -90,7 +90,7 @@ uptime_read() {
 }
 # rx tx: bytes received / sent by $IFACE so far
 net_read() {
-  rx= tx=
+  rx='' tx=''
   if (( LINUX )); then
     local name r t
     while read -r name r _ _ _ _ _ _ _ t _; do
@@ -118,12 +118,11 @@ my_ip() {
   if (( LINUX )); then ip -o -4 addr show "$IFACE" 2>/dev/null | awk '{print $4; exit}'
   else ipconfig getifaddr "$IFACE" 2>/dev/null; fi
 }
-ping_once() { if (( LINUX )); then ping -c1 -W1 -n 1.1.1.1; else ping -c1 -t1 -n 1.1.1.1; fi 2>/dev/null; }
 
 # bar <percent> <width>
 bar() {
   local p=$1 w=$2 fill col full="" empty="" n
-  (( fill = p * w / 100, fill > w ? fill = w : 0 ))
+  fill=$(( p * w / 100 )); (( fill > w )) && fill=$w
   col=$C_OK; (( p >= 70 )) && col=$C_WARN; (( p >= 90 )) && col=$C_BAD
   for (( n = 0; n < fill; n++ )); do full+="█"; done
   for (( n = fill; n < w; n++ )); do empty+="░"; done
@@ -166,7 +165,9 @@ now_ms; prev_t=$REPLY
 down=() upl=()
 # cursor hidden, and no autowrap: a line too long for the pane is cut instead of
 # wrapping onto the next row (which would push the header out of the pane)
-printf '\e[?25l\e[?7l'; trap 'printf "\e[?25h\e[?7h"; [[ -n $TMUX_PANE ]] && tmux set -pu -t "$TMUX_PANE" @wake 2>/dev/null; exit' INT TERM EXIT
+# (INT / TERM only exit: the EXIT trap then cleans up, once)
+printf '\e[?25l\e[?7l'; trap 'printf "\e[?25h\e[?7h"; [[ -n $TMUX_PANE ]] && tmux set -pu -t "$TMUX_PANE" @wake 2>/dev/null' EXIT
+trap 'exit' INT TERM
 trap ':' WINCH                 # a resize (zoom / restore) redraws right away
 trap ':' USR1                  # back in sight (tmux.conf hooks): look again right away
 [[ -n $TMUX_PANE ]] && tmux set -p -t "$TMUX_PANE" @wake $$
@@ -175,7 +176,7 @@ trap ':' USR1                  # back in sight (tmux.conf hooks): look again rig
 VIEW='#{pane_width} #{pane_height} #{window_zoomed_flag} #{&&:#{&&:#{window_active},#{session_attached}},#{||:#{?window_zoomed_flag,0,1},#{pane_active}}}'
 first=1 round=0
 while :; do
-  cols= rows= zoomed=0 visible=1
+  cols='' rows='' zoomed=0 visible=1
   [[ -n $TMUX_PANE ]] && read -r cols rows zoomed visible < <(tmux display -p -t "$TMUX_PANE" "$VIEW" 2>/dev/null)
   if [[ $visible == 0 ]]; then
     sleep 10 & wait $!; kill $! 2>/dev/null     # out of sight: a look every 10 s, or SIGUSR1
@@ -216,10 +217,16 @@ while :; do
   line "CPU" "$cpu" ""
   used_of $(( (mt - ma) * 1024 )) $(( mt * 1024 )); line "RAM" $(( (mt - ma) * 100 / mt )) "$REPLY"
   if (( st > 0 )); then used_of $(( (st - sf) * 1024 )) $(( st * 1024 )); line "Swap" $(( (st - sf) * 100 / st )) "$REPLY"; fi
-  if [[ -n $NVSMI ]] && IFS=', ' read -r gu gm gt gtemp gpow < <("$NVSMI" --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits 2>/dev/null | head -1) && [[ $gu =~ ^[0-9]+$ ]]; then
+  # the GPU and the ping every third round (6 s): nvidia-smi takes 30-55 ms on WSL, the ping waits
+  # on the network · the last answer is shown in between (read takes the first line: no head)
+  if [[ -n $NVSMI ]] && (( round % 3 == 1 )); then
+    gpu_raw=""; read -r gpu_raw < <("$NVSMI" --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits 2>/dev/null)
+  fi
+  if [[ -n ${gpu_raw:-} ]] && IFS=', ' read -r gu gm gt gtemp gpow <<< "$gpu_raw" && [[ $gu =~ ^[0-9]+$ && $gm =~ ^[0-9]+$ && $gt =~ ^[0-9]+$ ]]; then     # [N/A] (no memory data): no GPU line
+    [[ $gtemp =~ ^[0-9.]+$ ]] || gtemp=""; [[ $gpow =~ ^[0-9.]+$ ]] || gpow=""
     used_of $(( gm * 1048576 )) $(( gt * 1048576 )); gpu_txt=$REPLY
-    (( cols >= 50 )) && gpu_txt+=" · ${gtemp%.*}°C"
-    (( cols >= 60 )) && gpu_txt+=" · ${gpow%.*}W"
+    (( cols >= 50 )) && [[ -n $gtemp ]] && gpu_txt+=" · ${gtemp%.*}°C"
+    (( cols >= 60 )) && [[ -n $gpow ]] && gpu_txt+=" · ${gpow%.*}W"
     line "GPU" "$gu" "$gpu_txt"
   fi
   while read -r size used mnt; do
@@ -235,7 +242,11 @@ while :; do
     "$C_DOWN" "$dtxt" "$dspark" "$X" "$C_UP" "$utxt" "$uspark" "$X"
   out+=("$net")
   # Web: are we online, and how far is the internet
-  if ping_out=$(ping_once) && [[ $ping_out =~ time[=\<]([0-9]+) ]]; then
+  if (( round % 3 == 1 )); then           # (ping itself in the $(…): one fork, not a function's two)
+    if (( LINUX )); then ping_out=$(ping -c1 -W1 -n 1.1.1.1 2>/dev/null) || ping_out=""
+    else ping_out=$(ping -c1 -t1 -n 1.1.1.1 2>/dev/null) || ping_out=""; fi
+  fi
+  if [[ $ping_out =~ time[=\<]([0-9]+) ]]; then
     lat=${BASH_REMATCH[1]}
     lc=$C_OK; (( lat >= 100 )) && lc=$C_WARN; (( lat >= 300 )) && lc=$C_BAD
     # as much as fits: a wrapped line would push the header out of the pane
@@ -259,6 +270,13 @@ while :; do
   done
   printf '\e[J'
   zoom_button
+  # the pane as tall as what it shows (swap, a GPU, how many disks: it depends on the machine,
+  # system.sh only guesses): noted in @rows, which info-fit.sh keeps on resizes · only when the
+  # number changes, and never while zoomed (a resize would undo the zoom)
+  if [[ -n $TMUX_PANE && $zoomed == 0 && ${#out[@]} != "${fit_rows:-}" ]]; then
+    fit_rows=${#out[@]}
+    tmux set -p -t "$TMUX_PANE" @rows "$fit_rows" \; resize-pane -t "$TMUX_PANE" -y "$fit_rows" 2>/dev/null
+  fi
   first=0
   sleep 2 & wait $!; kill $! 2>/dev/null
 done

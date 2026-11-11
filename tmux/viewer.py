@@ -20,13 +20,14 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import tmuxlink
 from tui import (ACCENT, ANSI, BOLD, CRUST, DIM, GREEN, HOVER, RESET, SUB, SURFACE, TEXT, THUMB, TRACK, YELLOW,
-                 Menu, Screen, bg, cut, ellipsis, vlen, wrap)
+                 Menu, Screen, bg, cut, ellipsis, keep_bg, vlen, wrap)
 
 ACTIVE_TAB = bg("#89b4fa") + CRUST + BOLD
 SELECTED = bg("#585b70")
 WHEEL_STEP = 3
 TOP = 3            # first content row (1-based): title + tabs, rule, content…
-HIDDEN_CHECK = 10.0  # out of sight: seconds between looks (tmux normally wakes the pane first)
+HIDDEN_CHECK = 30.0  # out of sight: seconds between looks (tmux's hooks wake the pane first: a safety net)
+LOOK_EVERY = 2.0     # in sight: seconds between asking tmux what to show (a master's publish() wakes it first)
 ICON_ZOOM, ICON_UNZOOM, ICON_COPY, ICON_SELECT = "\U000F0293", "\U000F0294", "\U000F018F", "\U000F0489"
 
 
@@ -43,6 +44,7 @@ class Viewer:
 
     def __init__(self, screen):
         self.screen = screen
+        self._woken, self._looked = True, 0.0   # (poll(): ask tmux at once the first time)
         self.tab = 0
         self.key = None
         self.lines = []
@@ -90,8 +92,15 @@ class Viewer:
     def poll(self, force=False):
         """Out of sight it does nothing: the key and its contents are read once it is in sight
         (the system session starts with every tab; tmux wakes the pane, see tmuxlink.note_wake)."""
-        key = self.look()
-        if not self.visible:
+        # tmux is asked when something woke the pane (a master's selection, its tab in sight, a key)
+        # or every LOOK_EVERY: not on every tick (a fork each, 3 a second per pane)
+        now = time.monotonic()
+        if force or self._woken or now - self._looked >= LOOK_EVERY:
+            self._woken, self._looked = False, now
+            key = self.look()
+        else:
+            key = self.opts[self.option]
+        if not self.visible or self.menu:        # a menu open: what it would copy stays as it was
             return
         stale = self.refresh_every and time.monotonic() - self.loaded_at > self.refresh_every
         if force or key != self.key or stale:
@@ -114,6 +123,8 @@ class Viewer:
             sources = self.load(self.key, self.tabs[self.tab] if self.tabs else None, w) if self.key else []
         except OSError as e:     # an unreadable file (root's 0600 compose file…): say so, don't crash
             sources = [f"  {YELLOW}cannot read {e.filename or self.key}: {e.strerror}"]
+        except Exception as e:   # anything else: say what, keep the pane alive
+            sources = [f"  {YELLOW}could not show this: {type(e).__name__}: {e}"]
         self.set_lines(sources, w)
         self.loaded_at = time.monotonic()
         if reset:
@@ -169,15 +180,13 @@ class Viewer:
             if not self.key and n == 1:
                 line = f"  {DIM}{self.empty}"
             if self.sel and self.sel[0] <= i <= self.sel[1] and i < len(self.lines):
-                line = SELECTED + cut(line, text_w).replace(RESET, RESET + SELECTED) + " " * max(0, text_w - vlen(cut(line, text_w))) + RESET
+                line = SELECTED + keep_bg(cut(line, text_w), SELECTED) + " " * max(0, text_w - vlen(cut(line, text_w))) + RESET
             else:
                 line = cut(line, text_w)
             if bar:
                 line += RESET + "\x1b[K" + f"\x1b[{w}G" + (THUMB + "█" if ty <= n < ty + th else TRACK + "│")
             lines.append(line)
-        self.screen.paint(lines)
-        if self.menu:
-            self.menu.draw()
+        self.screen.paint(lines, self.menu)
 
     @staticmethod
     def short_tab(label):
@@ -210,8 +219,10 @@ class Viewer:
                 seen.add(n)
                 out.append(self.source_text(n))
         if out:
-            tmuxlink.copy("\n".join(out))
-            self.flash(f"{ICON_COPY} copied {len(out)} line{'s' if len(out) != 1 else ''} to the clipboard")
+            if tmuxlink.copy("\n".join(out)):
+                self.flash(f"{ICON_COPY} copied {len(out)} line{'s' if len(out) != 1 else ''} to the clipboard")
+            else:
+                self.flash("could not copy: tmux refused it")
 
     def row_at(self, y):
         i = self.top + (y - TOP)
@@ -236,7 +247,7 @@ class Viewer:
 
     def toggle_zoom(self):
         tmuxlink.toggle_zoom()
-        self.zoomed = not self.zoomed
+        self.zoomed = tmuxlink.pane_state("")[0]       # what tmux did (a pane alone in its tab cannot zoom)
 
     # ─── input ───
     def scroll(self, delta):
@@ -300,6 +311,8 @@ class Viewer:
                 self.copy_rows(*self.sel)
             elif self.dragging is not None:
                 self.sel = None                      # a plain click clears the selection
+                if getattr(self, "_was_following", False):
+                    self.following = True            # and does not pause a log that follows the end
             self.dragging = None
             return
         if b == 2 and not released:
@@ -326,27 +339,80 @@ class Viewer:
         if i is not None:
             self.dragging = i
             self.sel = (i, i)
+            self._was_following = self.following
             if self.follow_end:                      # don't let new lines move what you select
                 self.following = False
 
     def tick(self):
         self.poll()
+        at = getattr(self, "_rewrap_at", None)
+        if at and time.monotonic() - at > 0.3 and self.key and not self.menu:
+            self._rewrap_at = None
+            self.reload()
 
     def on_char(self, text):
         """Typed text (viewers with a search box use it)."""
 
 
+class BackgroundViewer(Viewer):
+    """A Viewer whose contents are read in a thread (git on a big repo, DNS, ssh…): the pane
+    keeps answering while they are read, shows what it had (or 'loading…') meanwhile and
+    redraws when they arrive. Subclasses write compute(key, tab, width) instead of load()."""
+
+    def __init__(self, screen):
+        from background import Background
+        self._ready = False
+        self._shown = {}                     # (key, tab) → the last lines shown, while new ones are read
+        self._bgv = Background(self._arrived, fallback=lambda: None)
+        super().__init__(screen)
+
+    def _arrived(self):
+        self._ready = True                   # shown at once: the loop gets a "ready" (from this thread)
+        poke = getattr(self.screen, "poke", None)
+        if poke:
+            poke(b"r")
+
+    def compute(self, key, tab, width):
+        return []
+
+    def _compute(self, key, tab, width):
+        try:
+            return self.compute(key, tab, width)
+        except Exception as e:               # say what, keep the pane alive
+            return [f"  {YELLOW}could not show this: {type(e).__name__}: {e}"]
+
+    def load(self, key, tab, width):
+        k = ("loading", key, tab, width)
+        lines = self._bgv.get(k, lambda: self._compute(key, tab, width), self.refresh_every or 30)
+        if lines is not None:
+            if len(self._shown) > 64:
+                self._shown.clear()
+                self._bgv.drop()
+            self._shown[(key, tab)] = lines
+            return lines
+        return self._shown.get((key, tab)) or [f"  {DIM}loading…"]
+
+    def tick(self):
+        super().tick()
+        if self._ready and self.visible and not self.menu:     # (a menu open: what it copies stays)
+            self._ready = False
+            self.reload()
+
+
 def run(viewer_class):
     try:
         with Screen() as screen:
+            tmuxlink.note_wake()      # first: a wake sent while the viewer starts is not lost
             v = viewer_class(screen)
-            tmuxlink.note_wake()
             v._size = screen.size()
             v.draw()
             for ev in screen.events(tick=v.interval if v.visible else HIDDEN_CHECK):
                 if ev[0] in ("mouse", "key", "char") and not v.visible:
+                    v._woken = True
                     v.tick()                                # input means it is in sight after all
                 if ev[0] in ("tick", "wake"):
+                    if ev[0] == "wake":
+                        v._woken = True                     # a master's selection, its tab in sight…
                     v.tick()
                     screen.tick = v.interval if v.visible else HIDDEN_CHECK
                     if not v.visible:
@@ -363,13 +429,19 @@ def run(viewer_class):
                     v.on_key(ev[1])
                 elif ev[0] == "char":
                     v.on_char(ev[1])
+                elif ev[0] == "ready":                     # background work (a log read, a save) answered
+                    if not v.visible:
+                        continue
+                    v.tick()                                # (no tmux call: it reads what arrived)
                 elif ev[0] == "resize":
-                    # background work (a whole-log read, a save) also wakes the pane this way:
-                    # only a real change of size closes an open menu
+                    # only a real change of size closes an open menu and asks tmux for the zoom
                     size = screen.size()
                     if size != getattr(v, "_size", None):
+                        width_changed = size[1] != getattr(v, "_size", (0, 0))[1]
                         v._size, v.menu = size, None
-                    v.zoomed = tmuxlink.pane_state("")[0]   # zoom / restore resize the pane
+                        if width_changed and v.key:            # wrapped for another width: again, once
+                            v._rewrap_at = time.monotonic()    # the resize stops (no reload per step)
+                        v.zoomed = tmuxlink.pane_state("")[0]  # zoom / restore resize the pane
                 v.draw()
     except SystemExit as e:
         sys.exit(0 if e.code is None else e.code)

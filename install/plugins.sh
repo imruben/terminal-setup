@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # ═══════════════════════════════════════════════════════════════
 #  terminal-setup · tmux and zsh plugins, at the versions in install/plugins.lock
 #    tmux/<name> → ~/.tmux/plugins/<name>   (tpm and the tmux plugins)
@@ -48,6 +49,14 @@ plugins_install() {
       plugin_lf "$dir"
       ok "${name#*/} $(git -C "$dir" log -1 --format='%h · %cs' 2>/dev/null)"
       continue
+    fi
+    # a folder there that is not a clone (copied by hand, a clone cut short): git clone would
+    # refuse it and stop the install · it is moved aside, never deleted
+    if [ -d "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ]; then
+      local old
+      old="$dir.old-$(date +%Y%m%d-%H%M%S)"
+      run mv "$dir" "$old"
+      warn "${name#*/}: $(tilde "$dir") was not a git clone: moved to $(tilde "$old")"
     fi
     run mkdir -p "$(dirname "$dir")"
     run git clone -q -c core.autocrlf=false "$url" "$dir"

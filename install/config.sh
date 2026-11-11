@@ -1,7 +1,11 @@
+# shellcheck shell=bash
+# shellcheck disable=SC2088  # "~/…" in messages is text to show, not a path
 # ═══════════════════════════════════════════════════════════════
 #  terminal-setup · your config files. Nothing is replaced and nothing is linked:
 #    ~/.zshrc       gets, at its end:  source "<repo>/zsh/zshrc"
 #    ~/.tmux.conf   gets, at its end:  TERMINAL_SETUP="<repo>" + source-file of tmux/tmux.conf
+#    ~/.zshenv      gets, at its end:  skip_global_compinit=1 (Ubuntu's /etc/zsh/zshrc would run
+#                   compinit too, before zsh/zshrc runs its own: completion loaded twice)
 #  between two marks, so ./uninstall.sh can take exactly those lines out again.
 #  ~/.tmux stays yours (tpm puts the plugins there; logs, session descriptions…).
 #  The prompt reads the repo's starship.toml (STARSHIP_CONFIG, set by zsh/zshrc);
@@ -18,10 +22,17 @@ COPIES="
 config/btop/btop.conf      .config/btop/btop.conf
 config/micro/settings.json .config/micro/settings.json
 "
+# the ones the install copied itself (one per line): uninstall.sh removes only those, never a
+# file you already had, even when it is the same as the repo's
+COPIED_LIST="$HOME/.tmux/terminal-setup-copies"
 
 block_zsh() {
   printf '%s\n' "$MARK_BEGIN  (./uninstall.sh takes it out)" \
     "source \"$REPO/zsh/zshrc\"" "$MARK_END"
+}
+block_zshenv() {
+  printf '%s\n' "$MARK_BEGIN  (./uninstall.sh takes it out)" \
+    "skip_global_compinit=1   # zsh/zshrc runs compinit itself" "$MARK_END"
 }
 block_tmux() {
   printf '%s\n' "$MARK_BEGIN  (./uninstall.sh takes it out)" \
@@ -37,10 +48,11 @@ check_marks() {
     || die "$(tilde "$1") has the line \"$MARK_BEGIN\" but no \"$MARK_END\" after it: put it back (or take both out), then run this again"
 }
 block_in()    { awk -v b="$MARK_BEGIN" -v e="$MARK_END" 'index($0,b)==1{on=1} on{print} index($0,e)==1{on=0}' "$1"; }
-# the file without the block, and without the blank lines left at its end
+# the file without the block, and without the blank lines left at its end · the blank line just
+# before the block goes with it (add_block put it there), so your lines come back as they were
 without_block() {
   awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
-    index($0,b)==1 { on=1; next }  on { if (index($0,e)==1) on=0; next }
+    index($0,b)==1 { sub(/[^\n]*\n$/, "", blank); on=1; next }  on { if (index($0,e)==1) on=0; next }
     /^[ \t]*$/ { blank = blank $0 "\n"; next }  { printf "%s%s\n", blank, $0; blank="" }' "$1"
 }
 
@@ -140,7 +152,9 @@ configure() {
   zshrc_clashes
   add_block "$HOME/.zshrc" "$(block_zsh)"
   add_block "$HOME/.tmux.conf" "$(block_tmux)"
+  add_block "$HOME/.zshenv" "$(block_zshenv)"
   run mkdir -p "$HOME/.tmux/plugins"
+  [ "${DRY_RUN:-0}" = 1 ] || touch "$COPIED_LIST"
   local src dst
   while read -r src dst; do
     [ -n "$src" ] || continue
@@ -151,6 +165,9 @@ configure() {
     fi
     run mkdir -p "$(dirname "$HOME/$dst")"
     run cp "$REPO/$src" "$HOME/$dst"
+    if [ "${DRY_RUN:-0}" != 1 ] && ! grep -qxF "$dst" "$COPIED_LIST" 2>/dev/null; then
+      printf '%s\n' "$dst" >> "$COPIED_LIST"
+    fi
     ok "~/$dst (copied from the repo: from now on it is yours)"
   done <<< "$COPIES"
 }

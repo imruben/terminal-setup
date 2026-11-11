@@ -22,7 +22,7 @@
 # ═══════════════════════════════════════════════════════════════
 set -euo pipefail
 
-REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+REPO=$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 USER=${USER:-$(id -un)}                    # not set in some containers
 # shellcheck source=install/lib.sh
 . "$REPO/install/lib.sh"
@@ -43,7 +43,19 @@ for arg in "$@"; do
   esac
 done
 BACKUP_DIR="$HOME/.terminal-setup-backup/$(date +%Y%m%d-%H%M%S)"
-case $REPO in *[[:space:]]*) die "the repo's path has spaces ($REPO): clone it somewhere without them" ;; esac
+# a folder with spaces: everything goes through a link without them (install/lib.sh: repo_path)
+REPO_REAL=$REPO
+if [ "$(repo_path "$REPO_REAL")" != "$REPO_REAL" ]; then
+  REPO=$(repo_path "$REPO_REAL")
+  if [ -e "$REPO" ] && [ ! -L "$REPO" ]; then
+    die "the repo's path has spaces, and $(tilde "$REPO") (its link without them) is already something else"
+  fi
+  if [ "$(readlink "$REPO" 2>/dev/null || true)" != "$REPO_REAL" ]; then
+    run mkdir -p "$(dirname "$REPO")"
+    run ln -sfn "$REPO_REAL" "$REPO"
+  fi
+  [ "$DRY_RUN" = 1 ] && REPO=$REPO_REAL       # (dry run: no link made, the files are read where they are)
+fi
 
 login_shell_zsh() {
   local zsh_path current
@@ -57,21 +69,24 @@ login_shell_zsh() {
   case $current in */zsh) ok "zsh is already your login shell"; return ;; esac
   step "Login shell"
   if ask "Make zsh your login shell? (now: ${current:-unknown})"; then
-    grep -qx "$zsh_path" /etc/shells || as_root sh -c "echo '$zsh_path' >> /etc/shells"
+    grep -qx "$zsh_path" /etc/shells || as_root sh -c "echo '$zsh_path' >> /etc/shells" \
+      || { warn "could not add $zsh_path to /etc/shells: zsh stays out of your login shell"; return 0; }
     as_root chsh -s "$zsh_path" "$USER" || warn "chsh failed: run  chsh -s $zsh_path  yourself"
     ok "zsh from the next login"
   fi
 }
 
-# installed already (both files load the repo): this run also updates everything
+# installed already (both files load the repo, and a full install got as far as the plugins:
+# after `make config` alone the first real install must not start with an apt full-upgrade)
 UPDATE=0
-if [ "$CONFIG_ONLY" = 0 ] && [ "$NO_UPDATE" = 0 ] && has_block "$HOME/.zshrc" && has_block "$HOME/.tmux.conf"; then
+if [ "$CONFIG_ONLY" = 0 ] && [ "$NO_UPDATE" = 0 ] && has_block "$HOME/.zshrc" && has_block "$HOME/.tmux.conf" \
+    && [ -d "$HOME/.tmux/plugins/tpm/.git" ]; then
   UPDATE=1
 fi
 
 # ─── plan ───
 detect_platform
-printf '\n%sterminal-setup%s · %s · %s\n' "$B" "$R" "$OS_NAME" "$ARCH"
+printf '\n%sterminal-setup %s%s · %s · %s\n' "$B" "$(repo_version "$REPO")" "$R" "$OS_NAME" "$ARCH"
 printf '%s%s%s\n' "$D" "repo: $(tilde "$REPO")" "$R"
 [ "$DRY_RUN" = 1 ] && printf '%s(dry run: nothing is changed)%s\n' "$YELLOW" "$R"
 
@@ -112,13 +127,14 @@ if [ "$UPDATE" = 1 ]; then
   if [ "$DRY_RUN" = 1 ]; then
     info "[dry-run] update  (zsh/functions.zsh)"
   else
-    # functions.zsh returns non-zero at its end (a hook test): only `update` counts
+    # only `update`'s own result counts
     TERMINAL_SETUP=$REPO zsh -c '. "$TERMINAL_SETUP/zsh/functions.zsh"; update' \
       || warn "update finished with errors (see above)"
   fi
 fi
 
 # a running tmux picks up the new config
+# shellcheck disable=SC2033  # tmux's own info command, not our info()
 if [ "$DRY_RUN" = 0 ] && tmux info >/dev/null 2>&1; then
   tmux source-file "$HOME/.tmux.conf" >/dev/null 2>&1 && ok "the running tmux reloaded its config"
   # its monitor still runs the code it started with (or, after a migration, the scripts where

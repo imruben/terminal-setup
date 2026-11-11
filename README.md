@@ -1,6 +1,6 @@
 # terminal-setup
 
-Mi terminal, lista en minutos en cualquier máquina: **zsh** con prompt, autocompletado y atajos, y **tmux** con todo integrado: barra con pestañas y botones, menús con el ratón, una guía de atajos con buscador y un **monitor del sistema** (procesos, puertos, paquetes, contenedores Docker y sus logs).
+Mi terminal, lista en minutos en cualquier máquina: **zsh** con prompt, autocompletado y atajos, y **tmux** con todo integrado: barra con pestañas y botones, menús con el ratón, una guía de atajos con buscador y un **monitor del sistema** (procesos, puertos, disco, paquetes, servidores SSH, contenedores Docker y sus logs, y tus repos git).
 
 Funciona en **Ubuntu 26.04**, **Ubuntu 24.04**, **WSL** (Ubuntu dentro de Windows) y **macOS**.
 
@@ -30,12 +30,19 @@ Funciona en **Ubuntu 26.04**, **Ubuntu 24.04**, **WSL** (Ubuntu dentro de Window
 - Sugerencias mientras escribes (`zsh-autosuggestions`) y colores de sintaxis (`zsh-syntax-highlighting`).
 - Autocompletado con vista previa ([fzf-tab](https://github.com/Aloxaf/fzf-tab)), `Ctrl+R` para buscar en el historial, `Ctrl+T` para buscar ficheros.
 - `ls` con iconos y colores ([eza](https://github.com/eza-community/eza)), `bat` en lugar de `cat`, `micro` como editor.
+- Buscar y moverse: [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`, texto dentro de ficheros), [fd](https://github.com/sharkdp/fd) (ficheros por nombre; también lo usa `Ctrl+T`), [zoxide](https://github.com/ajeetdsouza/zoxide) (`z carpeta` salta a las que más usas, `zi` para elegir).
+- [lazygit](https://github.com/jesseduffield/lazygit) para trabajar con git en la terminal (`Ctrl+a G` lo abre en una ventana flotante en la carpeta del panel, y también desde la pestaña git), [yq](https://github.com/mikefarah/yq) (jq para YAML), [shellcheck](https://www.shellcheck.net) (errores en scripts de shell; micro lo usa solo al guardar un `.sh`) y [tldr](https://github.com/tealdeer-rs/tealdeer) (`tldr tar`: ejemplos cortos de cualquier comando).
 - Funciones propias:
 
   | Comando | Qué hace |
   |---|---|
-  | `update` | actualiza todo: apt, snap, Homebrew, los plugins de zsh y de tmux (estos, con tmux abierto) |
-  | `clean` | limpia cachés y restos de apt, snap, Homebrew, journal y Docker |
+  | `update` | actualiza todo: apt, snap, Homebrew, uv, pnpm, Composer, el último Node LTS (fnm), las páginas de tldr, los plugins de zsh y de tmux (estos, con tmux abierto) |
+  | `clean` | limpia cachés y restos de apt, snap, Homebrew, journal, Docker, uv, pnpm, npm y Composer |
+  | `rgf <texto>` | busca dentro de los ficheros (rg), eliges el resultado con vista previa y lo abre en el editor en esa línea |
+  | `fe [patrón]` | eliges ficheros por nombre (fd + fzf, `Tab` marca varios) y los abre en el editor |
+  | `mkcd <dir>` / `extract <fichero>` | crear una carpeta y entrar / descomprimir cualquier formato |
+  | `serve [puerto]` | servidor web de la carpeta: PHP si hay `index.php` (o `public/index.php`), Python si no |
+  | `lg` · `pn` · `uvr` | lazygit · pnpm · uv run |
   | `installed-packages` | los paquetes que instalaste **tú** (apt, snap, brew) y por qué (notas) |
   | `ports` / `killport <puerto>` | qué escucha en cada puerto / liberarlo (pregunta antes) |
   | `dps` / `dsh` | contenedores Docker de un vistazo / entrar en uno |
@@ -72,10 +79,15 @@ Funciona en **Ubuntu 26.04**, **Ubuntu 24.04**, **WSL** (Ubuntu dentro de Window
 |---|---|
 | 1 · info | resumen del equipo (fastfetch), recursos (CPU, RAM, GPU, discos, red, ping) y btop |
 | 2 · monitor | procesos y puertos: ordenar, filtrar, parar (pregunta antes), saltar de uno a otro |
-| 3 · packages | tus paquetes (apt, snap, brew) con notas, actualizaciones, buscador e información de cada uno |
-| 4 · docker | contenedores, detalle (Dockerfile, compose, configuración final), logs en vivo con buscador |
+| 3 · disk | qué ocupa sitio, carpeta a carpeta (como ncdu), los discos y lo que se puede limpiar (apt, journal, snap, brew, Docker, cachés de pip / npm / Composer…, versiones viejas de Claude Code), con cuánto libera cada cosa |
+| 4 · packages | tus paquetes (apt, snap, brew) con notas, actualizaciones, buscador e información de cada uno |
+| 5 · ssh | los hosts de `~/.ssh/config` (y los que usaste a mano): si responden, qué cuenta ve GitHub con tu clave, sesiones y túneles abiertos; conectar, abrir un túnel, instalar tu clave; tus claves y cuáles tiene el agente |
+| 6 · docker | contenedores, detalle (Dockerfile, compose, configuración final), logs en vivo con buscador |
+| 7 · git | todos tus repos: rama, cambios, ↑ por subir · ↓ por bajar, stash, último commit y fetch, con qué identidad haces commit; estado, diff, log, ramas y stash de cada uno; fetch, pull, push (pregunta antes) |
 
-Solo trabaja lo que estás viendo: las pestañas ocultas (y todo el monitor cuando no está a la vista o nadie está conectado) no leen nada ni gastan CPU, y se ponen al día en cuanto aparecen.
+La pestaña **git** busca repos en las carpetas de `~/.tmux/git-roots` (una por línea, y opcionalmente cuántos niveles bajar: `~/clientes 2`). Sin ese fichero mira `~/workspace`, `~/projects`, `~/code`, `~/src`, `~/dev`, `~/repos` y `~/git`. Se cambia desde el propio panel: clic derecho → *Add a folder to look in…* o *Edit the folders to look in…*.
+
+Solo trabaja lo que estás viendo: las pestañas ocultas (y todo el monitor cuando no está a la vista o nadie está conectado) no leen nada ni gastan CPU, y se ponen al día en cuanto aparecen. La excepción es **btop** (pestaña info), que sigue refrescándose cada 2 s por su cuenta.
 
 Cada panel tiene su botón de **zoom**, su menú (clic derecho o `Enter`) y se adapta a cualquier tamaño de ventana. En las listas: escribe para filtrar (`Esc` o clic en **✕** lo borra), `↑↓` para moverte, `← →` o clic en un título para ordenar (`Ctrl+r` invierte), `Tab` para cambiar de fuente (all · apt · snap · brew). En los paneles de detalle y logs, `Tab` o `← →` cambian de pestaña.
 
@@ -91,7 +103,7 @@ cd ~/workspace/terminal-setup
 ./install.sh
 ```
 
-> El repo puede estar en cualquier carpeta (sin espacios en la ruta). Si después lo mueves, vuelve a ejecutar `./install.sh` para que tus ficheros apunten al sitio nuevo.
+> El repo puede estar en cualquier carpeta. Si su ruta tiene espacios, el instalador crea un enlace sin ellos (`~/.local/share/terminal-setup`) y lo usa en todas partes. Si después lo mueves, vuelve a ejecutar `./install.sh` para que tus ficheros apunten al sitio nuevo.
 
 Al terminar, **abre una terminal nueva**.
 
@@ -106,7 +118,7 @@ cd ~/workspace/terminal-setup && ./install.sh
 - Te pedirá tu contraseña (`sudo`) para instalar paquetes.
 - **Ubuntu 24.04** trae versiones antiguas de algunas herramientas. El instalador lo detecta y, solo en ese caso:
   - **compila tmux 3.6** (24.04 trae la 3.4, y la configuración necesita la 3.6). Tarda un minuto y se instala en `/usr/local`.
-  - instala **fzf**, **fastfetch** y **starship** desde sus versiones oficiales, porque las de 24.04 son antiguas o no existen.
+  - instala **fzf**, **fastfetch**, **starship** y **lazygit** desde sus versiones oficiales, porque las de 24.04 son antiguas o no existen (y **yq** siempre, también en 26.04: el `yq` de Ubuntu es otro programa). Cada descarga se comprueba con su sha256 (`install/versions.sh`) antes de usarla.
 - **Fuente**: si tienes escritorio, la instala en `~/.local/share/fonts`. Después, en la configuración de tu terminal (GNOME Terminal, Konsole, etc.), elige **JetBrainsMono Nerd Font**.
 - Por SSH en un servidor: la fuente va en el ordenador **desde el que te conectas**, no en el servidor.
 
@@ -135,6 +147,8 @@ En WSL, «abrir en el navegador» y `open` usan el navegador y el Explorador **d
 ### macOS
 
 > **Estado**: probado en un Mac. El monitor usa las herramientas propias de macOS (procesos con `ps`, puertos con `lsof`, memoria con `vm_stat`, red con `netstat`…). Si algo falla, `bash install/doctor.sh` es el primer paso.
+>
+> La pestaña **disk** mide tu carpeta personal: la primera vez macOS pregunta si la terminal puede leer Documentos, Escritorio, Descargas… Si dices que no, esas carpetas salen como «unreadable» y el resto se mide igual. Las pestañas disk, ssh y git aún no se han probado en un Mac.
 
 1. **Herramientas de línea de comandos de Apple** (traen git):
    ```bash
@@ -164,7 +178,7 @@ En WSL, «abrir en el navegador» y `open` usan el navegador y el Explorador **d
    source "/ruta/al/repo/zsh/zshrc"
    # <<< terminal-setup <<<
    ```
-   En `~/.tmux.conf` es lo mismo, con `source-file`. El resto de tus ficheros queda igual; por si acaso, guarda una copia de cómo estaban en `~/.terminal-setup-backup/<fecha>/`.
+   En `~/.tmux.conf` es lo mismo, con `source-file`. En `~/.zshenv` añade `skip_global_compinit=1`, para que Ubuntu no cargue el autocompletado otra vez antes que el repo. El resto de tus ficheros queda igual; por si acaso, guarda una copia de cómo estaban en `~/.terminal-setup-backup/<fecha>/`.
    - Ese `source` carga también los alias y las funciones del repo: no hace falta nada más.
    - `~/.tmux` sigue siendo una carpeta tuya: ahí van los plugins, los logs y las descripciones de sesión.
    - El prompt usa el `starship.toml` del repo (variable `STARSHIP_CONFIG`). La config de btop y la de micro se copian solo si no tienes una.
@@ -196,28 +210,43 @@ Lo mismo con **`make`** (si no lo tienes: `sudo apt install make`; `./install.sh
 | `doctor` | comprobar la instalación |
 | `files` | todos los archivos que ha puesto la instalación y para qué sirve cada uno (también: `terminal files`) |
 | `monitor` | reconstruir el monitor del sistema |
-| `check` | sintaxis de todos los scripts (para cambios en el repo) |
+| `check` | sintaxis de todos los scripts y shellcheck (para cambios en el repo) |
+| `test` | tests unitarios del código del monitor: dibujo, teclas, logs, docker, git, ssh (un segundo, no toca nada) |
+| `smoke` | abre cada panel del monitor en un tmux privado, le manda teclas y mira que no falle (~1 min) |
+| `test-install` | la instalación entera en Ubuntu 24.04 y 26.04 limpios, con Docker (`TAGS="24.04"` para una) |
+| `bench` | la CPU de cada panel del monitor, pestaña a pestaña (`SECS=30` por pestaña) |
+| `version` | qué versión es (también `terminal version`) |
+| `release` | etiquetar una versión: `make release VERSION=1.2.0` (ver [CHANGELOG.md](CHANGELOG.md)) |
+
+Cada `git push` pasa por **GitHub Actions** (`.github/workflows/ci.yml`):
+- `check`, pyflakes y `test` con Python 3.9 y 3.13;
+- la instalación entera en Ubuntu 24.04 y 26.04;
+- `test` + `smoke` en macOS (de momento solo informa: nunca se ha probado en un Mac de verdad).
+
+Las acciones están fijadas por commit, no por etiqueta, y Dependabot propone las nuevas cada semana. Al subir una etiqueta `vX.Y.Z`, `release.yml` publica la release con su texto del CHANGELOG.
 
 **Qué se instala**
 
 | | Ubuntu 26.04 / WSL | Ubuntu 24.04 | macOS |
 |---|---|---|---|
-| zsh, git, python3, jq, eza, bat, micro, btop, entr, ansifilter, git-delta, zsh-autosuggestions, zsh-syntax-highlighting | apt | apt | Homebrew (zsh y python3 ya vienen) |
+| zsh, git, python3, jq, eza, bat, micro, btop, entr, ansifilter, git-delta, ripgrep, fd, zoxide, tealdeer, shellcheck, zsh-autosuggestions, zsh-syntax-highlighting | apt | apt | Homebrew (zsh y python3 ya vienen) |
+| lazygit | apt | binario oficial (`~/.local/bin`) | Homebrew |
+| yq (mikefarah) | binario oficial (`~/.local/bin`: el `yq` de Ubuntu es otro programa) | igual | Homebrew |
 | tmux ≥ 3.6 | apt | compilado | Homebrew |
 | fzf ≥ 0.48 | apt | binario oficial (`~/.local/bin`) | Homebrew |
 | fastfetch | apt | `.deb` oficial | Homebrew |
-| starship | apt | instalador oficial (`~/.local/bin`) | Homebrew |
+| starship | apt | binario oficial (`~/.local/bin`) | Homebrew |
 | coreutils, flock, bash ≥ 4.2 | ya vienen | ya vienen | Homebrew (el `/bin/bash` de macOS es 3.2; tmux-autoreload necesita uno moderno) |
 | JetBrainsMono Nerd Font | `~/.local/share/fonts` (en WSL: en Windows) | igual | Homebrew |
 | plugins (tpm, resurrect, continuum, extrakto, fzf-url, logging, cowboy, autoreload, fzf-tab) | git | git | git |
 
-**Opcionales** (si están, se usan; si no, no pasa nada): **Docker** (pestaña docker), **gh** (GitHub), **snap** y **Homebrew** en Linux (aparecen en la pestaña packages), **nvidia-smi** (GPU en Resources).
+**Opcionales** (si están, se usan; si no, no pasa nada): **Docker** (pestaña docker y su limpieza en disk), **tig** (desde la pestaña git, además de lazygit), **gh** (GitHub), **snap** y **Homebrew** en Linux (aparecen en la pestaña packages), **nvidia-smi** (GPU en Resources).
 
 ---
 
 ## Primeros pasos
 
-Abre una terminal nueva: tmux arranca solo y te lleva al **monitor del sistema**. Desde ahí:
+Abre una terminal nueva: tmux arranca solo y te lleva al **monitor del sistema** (o a la sesión que elijas como de inicio, ver abajo). Desde ahí:
 
 | Quiero… | Cómo |
 |---|---|
@@ -228,6 +257,7 @@ Abre una terminal nueva: tmux arranca solo y te lleva al **monitor del sistema**
 | una sesión para trabajar al arrancar | si al abrir la terminal no existe `dev`, se crea al lado de `system` (en `~/dev`, o en tu home si no existe): `Ctrl+a s` para ir. Otro nombre: `export TERMINAL_DEFAULT_SESSION=<nombre>` en tu `~/.zshrc`; vacío (`=`) para ninguna |
 | pestaña nueva / dividir | `Ctrl+a c` · `Ctrl+a v` (al lado) · `Ctrl+a -` (debajo) |
 | volver al monitor | `Ctrl+a M` (o clic en CPU / RAM de la barra) |
+| que las terminales nuevas abran otra sesión | en `Ctrl+a s`, sobre la sesión: `Ctrl+s` (o clic derecho → *New terminals start here*) · en la terminal: `terminal start NOMBRE` · `terminal start system` vuelve al monitor. Si esa sesión no está abierta, se crea en su carpeta |
 | una terminal sin tmux | `Ctrl+a d`: sales de tmux al shell normal y tmux sigue funcionando (vuelves con `terminal`). Para que no arranque nunca: `export TERMINAL_NO_AUTOSTART=1` en tu `~/.zshrc` |
 
 > **`Ctrl+a`** es el prefijo de tmux: pulsa `Ctrl+a`, suelta, y luego la tecla. Mientras está activo, la barra se pone roja y muestra «press a key».
@@ -270,6 +300,15 @@ git pull          # lo último del repo
                   # paquetes del sistema y plugins a su última versión
 ```
 
+**Versiones.**
+- **Saber cuál tienes:** `terminal version`, `make version` o la primera línea de `./install.sh` y de `make doctor`. Puede salir:
+  - `v1.0.0`: exactamente esa versión;
+  - `v1.0.0-3-gabc1234`: 3 commits después;
+  - `-dirty` al final: hay cambios sin commit.
+- **Qué trae cada una:** [CHANGELOG.md](CHANGELOG.md).
+- **Quedarte en una concreta** (en otra máquina, por ejemplo): `git checkout v1.0.0` y `./install.sh`. Para volver a lo último: `git checkout main && git pull`.
+- **Publicar una:** `make release VERSION=X.Y.Z`. Los pasos completos están al final del CHANGELOG.
+
 ---
 
 ## Desinstalar
@@ -278,7 +317,7 @@ git pull          # lo último del repo
 cd ~/workspace/terminal-setup && ./uninstall.sh
 ```
 
-Quita **solo las líneas de terminal-setup** de `~/.zshrc` y `~/.tmux.conf`; el resto de esos ficheros queda igual (si solo tenían esas líneas, los borra). También quita las configs de btop y micro que copió, si no las has cambiado.
+Quita **solo las líneas de terminal-setup** de `~/.zshrc`, `~/.tmux.conf` y `~/.zshenv`; el resto de esos ficheros queda igual (si solo tenían esas líneas, los borra). También quita las configs de btop y micro que copió, si no las has cambiado.
 
 Los paquetes, la fuente y los plugins **se quedan instalados**, porque otras cosas pueden usarlos. `~/.tmux` también se queda, porque ahí están tus logs.
 
@@ -297,7 +336,7 @@ terminal-setup/
 │   ├── tmux-build.sh               compila tmux (Ubuntu 24.04)
 │   ├── brew.sh · Brewfile          macOS
 │   ├── fonts.sh                    JetBrainsMono Nerd Font
-│   ├── config.sh                   las líneas en ~/.zshrc y ~/.tmux.conf
+│   ├── config.sh                   las líneas en ~/.zshrc, ~/.tmux.conf y ~/.zshenv
 │   ├── plugins.sh · plugins.lock   plugins en sus versiones probadas
 │   ├── doctor.sh                   comprobación
 │   └── files.sh                    qué archivos ha puesto y para qué (terminal files)
@@ -309,11 +348,20 @@ terminal-setup/
 │   └── platform/                   lo propio de linux / wsl / macos
 ├── tmux/
 │   ├── tmux.conf                   lo carga tu ~/.tmux.conf
+│   ├── pane-menu.conf              el menú de panel (clic derecho, y Alt+clic derecho en apps con ratón)
 │   ├── terminal.zsh                gestor de sesiones (comando `terminal`, selector)
 │   ├── guide.zsh · quick-menu.zsh  guía (Ctrl+a ?) y menú rápido (Ctrl+a Space)
 │   ├── system.sh                   construye el monitor (sesión `system`)
 │   ├── *.py                        los paneles del monitor
 │   └── system/                     scripts del monitor (info, recursos, btop, abrir URLs…)
+├── tests/
+│   ├── unit/                       tests unitarios del monitor (make test)
+│   ├── shell/lib.sh                las funciones del instalador (make test)
+│   ├── smoke/panes.sh              cada panel en un tmux privado (make smoke)
+│   ├── install/                    la instalación en contenedores Ubuntu (make test-install)
+│   └── bench/cpu.sh                CPU del monitor (make bench)
+├── .github/                        CI en cada push, release al subir una etiqueta, Dependabot
+├── CHANGELOG.md                    qué trae cada versión, y cómo publicar una
 ├── config/
 │   ├── starship.toml               el prompt (STARSHIP_CONFIG)
 │   ├── btop/btop.conf              el btop del monitor (copiado a ~/.config/btop si no tienes)
@@ -321,7 +369,7 @@ terminal-setup/
 └── windows/windows-terminal.md     WSL: fuente y perfil de Windows Terminal
 ```
 
-**No van al repo** (son de cada máquina y viven en tu home): tu `~/.zshrc` y `~/.tmux.conf`, los plugins (`~/.tmux/plugins`), los logs de tmux (`~/.tmux/logs`), las descripciones de sesión (`~/.tmux/descriptions.tsv`), los guardados de tmux-resurrect y tus notas de paquetes (`~/.apt-notes.tsv`).
+**No van al repo** (son de cada máquina y viven en tu home): tu `~/.zshrc`, `~/.zshenv` y `~/.tmux.conf`, los plugins (`~/.tmux/plugins`), los logs de tmux (`~/.tmux/logs`), las descripciones de sesión (`~/.tmux/descriptions.tsv`), las carpetas de la pestaña git (`~/.tmux/git-roots`), la sesión de inicio (`~/.tmux/start-session`), los guardados de tmux-resurrect, tus notas de paquetes (`~/.apt-notes.tsv`) y la caché del autocompletado (`~/.cache/zsh/zcompdump`).
 
 ---
 

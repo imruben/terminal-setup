@@ -6,15 +6,45 @@
 # ═══════════════════════════════════════════════════════════════
 
 export TERMINAL_SETUP=${${(%):-%x}:A:h:h}  # the repo: this file is its zsh/zshrc
+# a repo in a folder with spaces: its link without them (install/lib.sh: repo_path), or the commands
+# this builds for tmux and sh would cut the path at the space
+() {   # (a variable, not ${:-…}: there the - of the name is a token and :A gets a broken path)
+  local link=$HOME/.local/share/terminal-setup
+  [[ $TERMINAL_SETUP == *[[:space:]]* && ${link:A} == $TERMINAL_SETUP ]] && TERMINAL_SETUP=$link
+}
 
 typeset -U path fpath
+
+# What a tool prints for the shell to run at start (its init, its colours…): kept in
+# ~/.cache/zsh/init and made again only when the tool changes (an update), so a new shell does not
+# run fzf, starship, zoxide, dircolors… every time · _cached_init <name> <the tool's file> <command…>
+_cached_init() {
+  local name=$1 tool=$2 f=${XDG_CACHE_HOME:-$HOME/.cache}/zsh/init/$1.zsh; shift 2
+  if [[ ! -s $f || $tool -nt $f ]]; then
+    [[ -d ${f:h} ]] || mkdir -p ${f:h}
+    "$@" >| $f 2>/dev/null || { rm -f $f; return 0 }
+    zcompile $f 2>/dev/null
+  fi
+  source $f
+}
+
 # Homebrew, when it is installed (macOS: /opt/homebrew or /usr/local · Linux: /home/linuxbrew):
-# brew, what it installs and its completions; ~/.local/bin still wins
+# brew, what it installs and its completions; ~/.local/bin still wins · (its shellenv is made in a
+# clean environment: with brew on the PATH already it would leave the PATH out)
 for _brew in /opt/homebrew/bin/brew /usr/local/bin/brew /home/linuxbrew/.linuxbrew/bin/brew; do
-  [[ -x $_brew ]] && { eval "$($_brew shellenv zsh)"; break }
+  [[ -x $_brew ]] && { _cached_init brew-shellenv $_brew env -i HOME=$HOME PATH=/usr/bin:/bin $_brew shellenv zsh; break }
 done
 unset _brew
 path=("$HOME/.local/bin" $path)
+# pnpm and fnm (Node versions), when their official installers put them here
+[[ -d ~/.local/share/pnpm ]] && { export PNPM_HOME=~/.local/share/pnpm; path=("$PNPM_HOME/bin" $path) }
+if [[ -x ~/.local/share/fnm/fnm ]]; then
+  path=(~/.local/share/fnm $path)
+  # the Node of .nvmrc / .node-version as you cd in (looking up the folders), else the default
+  eval "$(fnm env --use-on-cd --version-file-strategy=recursive --shell zsh)"
+  # a shell that starts inside a project (a new pane, a split) gets its Node too, not only after a cd
+  [[ $PWD != $HOME ]] && (( $+functions[_fnm_autoload_hook] )) && _fnm_autoload_hook >/dev/null 2>&1
+fi
 export EDITOR=micro
 export VISUAL=micro
 export BROWSER=$TERMINAL_SETUP/tmux/system/open.sh      # the desktop's browser, whatever the system
@@ -56,10 +86,19 @@ bindkey '^H' backward-kill-word
 ZSH_AUTOSUGGEST_BUFFER_MAX_SIZE=100
 ZSH_HIGHLIGHT_MAXLENGTH=512
 
-autoload -Uz compinit && compinit
+# Dump in ~/.cache; full security check (compaudit) only once a day, -C otherwise. The full run
+# leaves the dump as it is when nothing changed, so touch it: else -C would never come back.
+# New completions (brew install …) show up at the next daily run, or after rm ~/.cache/zsh/zcompdump
+_zcd=${XDG_CACHE_HOME:-$HOME/.cache}/zsh/zcompdump
+[[ -d ${_zcd:h} ]] || mkdir -p ${_zcd:h}
+autoload -Uz compinit
+_zfresh=( $_zcd(N.mh-24) )        # glob qualifier: non-empty if the dump is < 24h old
+# (the dump is compiled too: zsh reads the .zwc while it is newer, 9 ms → 2 ms)
+if (( $#_zfresh )); then compinit -C -d $_zcd; else compinit -d $_zcd && touch $_zcd && zcompile $_zcd; fi
+unset _zcd _zfresh
 # LS_COLORS (also used by completion): dircolors on Linux, gdircolors (coreutils) on macOS
-if (( $+commands[dircolors] )); then eval "$(dircolors -b)"
-elif (( $+commands[gdircolors] )); then eval "$(gdircolors -b)"
+if (( $+commands[dircolors] )); then _cached_init dircolors $commands[dircolors] dircolors -b
+elif (( $+commands[gdircolors] )); then _cached_init dircolors $commands[gdircolors] gdircolors -b
 fi
 zstyle ':completion:*' menu no
 zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'
@@ -74,8 +113,14 @@ zstyle ':fzf-tab:complete:(micro|bat|cat|vim):*' fzf-preview \
 export FZF_DEFAULT_OPTS='--height=40% --layout=reverse --border'
 export FZF_CTRL_T_OPTS="--preview 'bat -n --color=always --line-range :200 {} 2>/dev/null || eza --tree --level=2 --color=always {}'"
 export FZF_ALT_C_OPTS="--preview 'eza --tree --level=2 --color=always {}'"
+# fd lists files for fzf: faster than find, hidden files too, skips .git and what .gitignore says
+if (( $+commands[fd] )); then
+  export FZF_DEFAULT_COMMAND='fd --type f --hidden --exclude .git'
+  export FZF_CTRL_T_COMMAND='fd --hidden --exclude .git'
+  export FZF_ALT_C_COMMAND='fd --type d --hidden --exclude .git'
+fi
 
-[ -x /usr/bin/lesspipe ] && eval "$(SHELL=/bin/sh lesspipe)"
+[ -x /usr/bin/lesspipe ] && _cached_init lesspipe /usr/bin/lesspipe env SHELL=/bin/sh lesspipe
 
 # Alias and functions
 source "$TERMINAL_SETUP/zsh/aliases.zsh"
@@ -84,8 +129,38 @@ source "$TERMINAL_SETUP/zsh/git.zsh"          # git and GitHub shortcuts · ghel
 
 # Plugins
 [ -f ~/.zsh/plugins/fzf-tab/fzf-tab.plugin.zsh ] && source ~/.zsh/plugins/fzf-tab/fzf-tab.plugin.zsh
-(( $+commands[fzf] )) && source <(fzf --zsh)
-(( $+commands[starship] )) && eval "$(starship init zsh)"
+(( $+commands[fzf] )) && _cached_init fzf ${commands[fzf]:A} fzf --zsh   # (an fzf older than 0.48 has no --zsh: nothing)
+if (( $+commands[starship] )); then
+  _cached_init starship ${commands[starship]:A} starship init zsh --print-full-init
+  # no right_format in the theme: no right prompt, so no second `starship prompt` per prompt
+  [[ -r $STARSHIP_CONFIG && $(<$STARSHIP_CONFIG) == *right_format* ]] || unset RPROMPT
+fi
+(( $+commands[zoxide] )) && _cached_init zoxide ${commands[zoxide]:A} zoxide init zsh   # z <part of a folder> · zi: pick with fzf
+
+# Completions the tools print themselves: kept in ~/.cache/zsh/completions and made again
+# only when the tool changes (an update), so a new shell does not run them every time
+_tool_completion() {
+  local name=$1 f=${XDG_CACHE_HOME:-$HOME/.cache}/zsh/completions/_$1; shift
+  (( $+commands[$name] )) || return 0
+  if [[ ! -s $f || ${commands[$name]:A} -nt $f ]]; then
+    [[ -d ${f:h} ]] || mkdir -p ${f:h}
+    "$@" >| $f 2>/dev/null || { rm -f $f; return 0 }
+  fi
+  # a completion written to be autoloaded (#compdef first: uv's is 570 KB, 33 ms to read every
+  # start) is loaded the first time it is used · others (pnpm's defines its own) are run now
+  local first; read -r first < $f
+  if [[ $first == '#compdef'* ]]; then
+    autoload -Uz $f && compdef ${f:t} $name
+  else
+    source $f
+  fi
+}
+_tool_completion yq   yq shell-completion zsh
+_tool_completion uv   uv generate-shell-completion zsh
+_tool_completion uvx  uvx --generate-shell-completion zsh
+_tool_completion fnm  fnm completions --shell zsh
+_tool_completion pnpm pnpm completion zsh                 # also for the pn alias
+unfunction _tool_completion _cached_init
 # zsh-autosuggestions and zsh-syntax-highlighting (this one last): from apt or from Homebrew
 for _p in zsh-autosuggestions/zsh-autosuggestions.zsh zsh-syntax-highlighting/zsh-syntax-highlighting.zsh; do
   for _d in /usr/share ${HOMEBREW_PREFIX:+$HOMEBREW_PREFIX/share}; do

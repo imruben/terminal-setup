@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2088  # "~/…" in messages is text to show, not a path
 # ═══════════════════════════════════════════════════════════════
 #  terminal-setup · every file the install put on this machine, and what it is for
 #    bash install/files.sh      (also: make files)
@@ -7,8 +8,9 @@
 #  so some may have been there before it.
 # ═══════════════════════════════════════════════════════════════
 
-REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+REPO=$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 . "$REPO/install/lib.sh"
+[ -e "$(repo_path "$REPO")" ] && REPO=$(repo_path "$REPO")    # a folder with spaces: its link
 . "$REPO/install/config.sh"
 detect_platform
 USER=${USER:-$(id -un)}
@@ -24,16 +26,19 @@ file() {
 group() { printf '\n  %s%s%s  %s%s%s\n' "$B" "$1" "$R" "$D" "$2" "$R"; }
 
 group "Your files" "the install adds a few lines at their end, between two marks"
-for f in .zshrc .tmux.conf; do
+for f in .zshrc .tmux.conf .zshenv; do
   if has_block "$HOME/$f"; then
     lines=$(grep -nF -e "$MARK_BEGIN" -e "$MARK_END" "$HOME/$f" | cut -d: -f1 | paste -sd- -)
-    file "$HOME/$f" "loads the repo's $([ $f = .zshrc ] && echo zsh/zshrc || echo tmux/tmux.conf) · lines $lines"
+    case $f in .zshrc) what="loads the repo's zsh/zshrc" ;; .tmux.conf) what="loads the repo's tmux/tmux.conf" ;;
+               *) what="skips the system's compinit (zsh/zshrc runs it)" ;; esac
+    file "$HOME/$f" "$what · lines $lines"
   else
     printf '    %s– %-44s does not load terminal-setup (run ./install.sh)%s\n' "$D" "~/$f" "$R"
   fi
 done
 
 group "Loaded from the repo, not copied" "$(tilde "$REPO") · edit them there: git pull brings the changes to every machine"
+[ "$REPO" = "$REPO_LINK" ] && file "$REPO_LINK" "a link to the repo, whose folder has spaces (→ $(tilde "$(readlink "$REPO_LINK")"))"
 case $OS:$IS_WSL in macos:*) plat=macos ;; *:1) plat=wsl ;; *) plat=linux ;; esac
 repofile() { [ -e "$REPO/$1" ] && printf '    %s✔%s %-44s %s\n' "$GREEN" "$R" "$1" "$2"; }
 repofile zsh/zshrc "zsh: history, keys, completion, plugins, tmux autostart (your ~/.zshrc sources it)"
@@ -72,7 +77,7 @@ plugin_why() {
     *)                echo "" ;;
   esac
 }
-while read -r name url commit; do
+while read -r name _; do
   case $name in
     tmux/*) dir=$HOME/.tmux/plugins/${name#tmux/} ;;
     zsh/*)  dir=$HOME/.zsh/plugins/${name#zsh/} ;;
@@ -82,10 +87,14 @@ while read -r name url commit; do
 done < <(grep -v '^#' "$REPO/install/plugins.lock")
 
 group "Programs outside the package manager" "when the system's own version is missing or too old"
-file /usr/local/bin/tmux "tmux built from source (Ubuntu 24.04: its tmux is older than 3.6)"
+# (on an Intel Mac /usr/local/bin/tmux is Homebrew's)
+[ "$OS" = macos ] || file /usr/local/bin/tmux "tmux built from source (Ubuntu 24.04: its tmux is older than 3.6)"
 file "$HOME/.local/bin/fzf" "fzf official binary (when Ubuntu's is older than 0.48)"
-file "$HOME/.local/bin/starship" "the prompt, official installer (when Ubuntu has no starship)"
+file "$HOME/.local/bin/starship" "the prompt, official binary (when Ubuntu has no starship)"
+file "$HOME/.local/bin/lazygit" "lazygit official binary (when Ubuntu has no lazygit)"
+file "$HOME/.local/bin/yq" "yq official binary (mikefarah's: Ubuntu's yq is another program)"
 file "$HOME/.local/bin/bat" "a link to batcat: Ubuntu calls bat \"batcat\""
+file "$HOME/.local/bin/fd" "a link to fdfind: Ubuntu calls fd \"fdfind\""
 if [ "$OS" = macos ]; then
   file "$HOME/.terminfo" "tmux-256color terminal description (macOS lacks it)"
 elif [ "$IS_WSL" = 1 ]; then
@@ -114,6 +123,10 @@ pkg_why() {
     ncurses) echo "tmux-256color description" ;; coreutils) echo "gdircolors, gnumfmt" ;;
     flock) echo "the system monitor's lock" ;;   bash) echo "bash ≥ 4.2 for tmux-autoreload" ;;
     font-jetbrains-mono-nerd-font) echo "the Nerd Font" ;;
+    ripgrep) echo "rg: search inside files" ;;   fd-find|fd) echo "fd: find files by name · Ctrl+t" ;;
+    zoxide) echo "z: cd that learns your folders" ;; lazygit) echo "git in the terminal (git tab too)" ;;
+    tealdeer) echo "tldr: short examples of any command" ;;
+    shellcheck) echo "finds bugs in shell scripts (micro, make check)" ;; yq) echo "jq for YAML (mikefarah/yq)" ;;
     *) echo "" ;;
   esac
 }
@@ -125,9 +138,9 @@ if [ "$OS" = macos ]; then
   done
 else
   . "$REPO/install/apt.sh"
-  for p in $APT_PACKAGES $APT_DESKTOP tmux fzf fastfetch starship; do
+  for p in $APT_PACKAGES $APT_DESKTOP tmux fzf fastfetch starship lazygit yq; do
     v=$(dpkg-query -W -f='${Status}\t${Version}' "$p" 2>/dev/null | awk -F'\t' '$1 ~ / installed$/ {print $2}')
-    bin=$p; [ "$p" = git-delta ] && bin=delta
+    case $p in git-delta) bin='delta' ;; ripgrep) bin=rg ;; fd-find) bin=fd ;; tealdeer) bin=tldr ;; *) bin=$p ;; esac
     if [ -n "$v" ]; then
       printf '    %s✔%s %-30s %s %s(%s)%s\n' "$GREEN" "$R" "apt $p" "$(pkg_why "$p")" "$D" "$v" "$R"
     elif have "$bin"; then                    # not from apt: say where it is
@@ -144,6 +157,9 @@ file "$HOME/.tmux/descriptions.tsv" "what each session is for (session picker �
 file "${XDG_DATA_HOME:-$HOME/.local/share}/tmux/resurrect" "the saved sessions (tmux-resurrect)"
 file "$HOME/.apt-notes.tsv" "why you installed each package (Packages pane → Why…)"
 file "$HOME/.apt-base.txt" "apt packages the system came with (not shown as yours)"
+file "$HOME/.tmux/git-roots" "the folders the git tab looks for repos in (Repos pane → Edit…)"
+file "$HOME/.tmux/start-session" "the session new terminals open (terminal start · none: the system monitor)"
+file "${XDG_CACHE_HOME:-$HOME/.cache}/zsh/zcompdump" "zsh's completion cache (rebuilt once a day)"
 
 group "Backups" "your files as they were before a change, just in case · nothing deletes them"
 backups=$(ls -1d "$HOME"/.terminal-setup-backup/*/ 2>/dev/null)

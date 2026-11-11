@@ -13,10 +13,12 @@ import pwd
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import tmuxlink
 from table import Column, TableApp, run
 from tui import DIM, SUB, TEXT, YELLOW
 
@@ -51,10 +53,12 @@ def ps_processes():
     """macOS: [(pid, ppid, uid, state, rss bytes, cpu%, name, command line)] from ps.
     comm (the program's path) and args may both contain spaces, so they come from two
     calls, each with the spaced field last."""
+    env = {**os.environ, "LC_ALL": "C"}           # %cpu as 1.5, not 1,5
     base = subprocess.run(["ps", "-axo", "pid=,ppid=,uid=,stat=,rss=,%cpu=,comm="],
-                          capture_output=True, text=True).stdout
+                          capture_output=True, text=True, env=env, timeout=10, stdin=subprocess.DEVNULL).stdout
     args = {}
-    for line in subprocess.run(["ps", "-axo", "pid=,args="], capture_output=True, text=True).stdout.splitlines():
+    for line in subprocess.run(["ps", "-axo", "pid=,args="], capture_output=True, text=True, env=env, timeout=10,
+                               stdin=subprocess.DEVNULL, errors="replace").stdout.splitlines():
         pid, _, cmd = line.strip().partition(" ")
         if pid.isdigit():
             args[int(pid)] = cmd.strip()
@@ -77,11 +81,33 @@ def tmux(*args):
     return subprocess.run(["tmux", *args], capture_output=True, text=True)
 
 
+def start_of(pid):
+    """When a process started (in ticks since boot, /proc/PID/stat field 22; macOS: ps's
+    start time) · None when gone."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            stat = f.read().decode("utf-8", "replace")
+        return int(stat[stat.rindex(")") + 2:].split()[19])
+    except FileNotFoundError:
+        if os.path.isdir("/proc/self"):
+            return None                          # Linux: the process is gone
+    except (OSError, ValueError, IndexError):
+        return None
+    # no /proc (macOS): ps's start time, to the second ("Tue Nov  4 10:12:33 2026")
+    try:
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+                             timeout=3, stdin=subprocess.DEVNULL).stdout.strip()
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return out or None
+
+
 class Procs(TableApp):
     icon = "\U000F0430"
     title = "Processes"
     noun = "processes"
     sort_key = "cpu"
+    search_keys = ("pid", "user", "name", "cmd")
     columns = [Column("pid", "PID", 7, "r"),
                Column("user", "USER", 9, optional=True),
                Column("cpu", "CPU%", 6, "r", desc=True, fmt=lambda v: f"{v:.1f}"),
@@ -93,8 +119,12 @@ class Procs(TableApp):
         self.users = {}
         self.total = mem_total()
         out = tmux("display", "-p", "#{pid}").stdout.strip()
-        # never offer to kill these: tmux itself, this pane, pid 1
-        self.protected = {1, os.getpid(), os.getppid()} | ({int(out)} if out.isdigit() else set())
+        # never offer to kill these: tmux itself, this pane, pid 1 (and 0: kernel_task on macOS)
+        self.why_protected = {0: "the kernel", 1: "starts everything else", os.getpid(): "this pane",
+                              os.getppid(): "this pane"}
+        if out.isdigit():
+            self.why_protected[int(out)] = "tmux itself"
+        self.protected = set(self.why_protected)
         super().__init__(screen)
 
     def user(self, uid):
@@ -112,32 +142,44 @@ class Procs(TableApp):
                     for pid, ppid, uid, state, rss, cpu, name, cmd in ps_processes()]
         now = time.monotonic()
         rows, seen = [], {}
+        # the CPU % is the ticks since the previous look: one from long ago (the tab out of sight, a
+        # menu open) would give the average of minutes or hours, and sort by it · then this look is
+        # only a first sample, and another comes half a second later (a "ready" event)
+        stale = now - getattr(self, "_prev_at", float("-inf")) > 3 * self.interval
+        if stale:
+            self.prev = {}
+            threading.Timer(0.5, self.wake).start()
+        self._prev_at = now
         for d in os.listdir("/proc"):
             if not d.isdigit():
                 continue
             pid = int(d)
             try:
-                with open(f"/proc/{d}/stat") as f:
-                    stat = f.read()
+                with open(f"/proc/{d}/stat", "rb") as f:          # a name can be any bytes, not UTF-8
+                    stat = f.read().decode("utf-8", "replace")
                 with open(f"/proc/{d}/cmdline", "rb") as f:
                     cmd = f.read().replace(b"\0", b" ").decode(errors="replace").strip()
                 uid = os.stat(f"/proc/{d}").st_uid
-            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                name = stat[stat.index("(") + 1:stat.rindex(")")]
+                f = stat[stat.rindex(")") + 2:].split()
+                flags, start = int(f[6]), int(f[19])
+                ticks = int(f[11]) + int(f[12])
+                rss = int(f[21]) * PAGE
+            except (OSError, ValueError, IndexError):            # gone meanwhile, or unreadable
                 continue
-            if not cmd:                        # kernel threads
+            if flags & 0x00200000:                               # PF_KTHREAD: a kernel thread
                 continue
-            name = stat[stat.index("(") + 1:stat.rindex(")")]
-            if len(name) == 15:                # the kernel cuts names at 15 chars: use the program
+            if not cmd:                                          # a zombie (it has no command line any more)
+                cmd = f"[{name}]"
+            elif len(name) == 15:              # the kernel cuts names at 15 chars: use the program
                 exe = os.path.basename(cmd.split()[0]) if cmd else ""
                 name = exe if exe.startswith(name[:8]) else name
-            f = stat[stat.rindex(")") + 2:].split()
-            ticks = int(f[11]) + int(f[12])
-            seen[pid] = (ticks, now)
-            p = self.prev.get(pid)
+            key = (pid, start)                                   # a pid reused by a new process is new
+            seen[key] = (ticks, now)
+            p = self.prev.get(key)
             cpu = (ticks - p[0]) / CLK / max(1e-3, now - p[1]) * 100 if p else 0.0
-            rss = int(f[21]) * PAGE
             rows.append({"id": pid, "pid": pid, "user": self.user(uid), "uid": uid, "cpu": max(0.0, cpu),
-                         "rss": rss, "name": name, "cmd": cmd, "state": f[0], "ppid": int(f[1])})
+                         "rss": rss, "name": name, "cmd": cmd, "state": f[0], "ppid": int(f[1]), "start": start})
         self.prev = seen
         return rows
 
@@ -156,11 +198,11 @@ class Procs(TableApp):
         return f"{r['name']} · {r['pid']}"
 
     def killable(self, r):
-        return r["pid"] not in self.protected
+        return r["pid"] > 0 and r["pid"] not in self.protected
 
     def menu_items(self, r):
         k = self.killable(r)
-        note = "" if k else "  (tmux itself)"
+        note = "" if k else f"  ({self.why_protected.get(r['pid'], 'protected')})"
         return [(f"{ICON_STOP}  Stop · SIGTERM…{note}", "s", (lambda: self.ask_kill(r, signal.SIGTERM)) if k else None),
                 (f"{ICON_KILL}  Force kill · SIGKILL…{note}", "k", (lambda: self.ask_kill(r, signal.SIGKILL)) if k else None),
                 ("", "", None),
@@ -171,17 +213,33 @@ class Procs(TableApp):
     def on_delete(self, r):
         if self.killable(r):
             self.ask_kill(r, signal.SIGTERM)
+        else:
+            self.flash(f"{r['name']} is not stopped from here: {self.why_protected.get(r['pid'], 'protected')}", ok=False)
 
     def ask_kill(self, r, sig):
+        if r.get("state") == "Z":                # a zombie has already ended: only its parent can clear it
+            self.flash(f"{r['name']} is a zombie: it already ended · its parent ({r['ppid']}) has to reap it", ok=False)
+            return
         if sig == signal.SIGKILL:
             q = f"Force kill {r['name']} ({r['pid']})? it cannot clean up, unsaved work is lost"
         else:
             q = f"Stop {r['name']} ({r['pid']})?"
+        if r.get("start") is None:               # macOS (ps has no start time in the list): noted now
+            r = {**r, "start": start_of(r["pid"])}
         self.confirm(q, lambda: self.kill(r, sig), r)
 
     def kill(self, r, sig):
+        """Only if that pid is still the same process (the question may have stayed open: a pid
+        is reused once its process ends) · a stopped process (Ctrl+Z) also gets SIGCONT, or the
+        SIGTERM would wait until something resumed it."""
+        if start_of(r["pid"]) != r.get("start"):
+            self.flash(f"{r['name']} ({r['pid']}) is not running any more: nothing sent")
+            self.reload()
+            return
         try:
             os.kill(r["pid"], sig)
+            if sig == signal.SIGTERM and r.get("state") in ("T", "t"):
+                os.kill(r["pid"], signal.SIGCONT)
             self.flash(f"sent {sig.name} to {r['name']} ({r['pid']})")
         except ProcessLookupError:
             self.flash(f"{r['name']} had already finished")
@@ -190,8 +248,10 @@ class Procs(TableApp):
         self.reload()
 
     def copy(self, text):
-        tmux("set-buffer", "-w", "--", text)
-        self.flash(f"copied: {text[:60]}")
+        if tmuxlink.copy(text):                     # stdin (no size limit) · pbcopy on macOS too
+            self.flash(f"copied: {text[:60]}")
+        else:
+            self.flash("could not copy: tmux refused it", ok=False)
 
     def show_ports(self, r):
         tmux("set", "-g", "@ports-query", f"pid={r['pid']}")

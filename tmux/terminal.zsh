@@ -2,8 +2,9 @@
 # ═══════════════════════════════════════════════════════════════
 #  terminal · tmux session manager
 #  Used by: the `terminal` shell function (zsh/functions.zsh), the Ctrl+a s
-#  popup and `terminal`. New Windows Terminal tabs open the `system` monitor
-#  session instead (tmux/system.sh).
+#  popup and `terminal`. New terminal windows / tabs open the start session:
+#  the one chosen with `terminal start NAME` (or Ctrl+s in the session picker),
+#  kept in ~/.tmux/start-session · without one, the `system` monitor (tmux/system.sh).
 #  Sessions are created by hand: no project scanning.
 #
 #  Config (env vars):
@@ -12,10 +13,16 @@
 
 emulate -L zsh
 export TERMINAL_SETUP=${0:A:h:h}            # the repo (this file is in its tmux/)
+# a repo in a folder with spaces: its link without them (install/lib.sh: repo_path), or the commands
+# this builds for tmux and sh would cut the path at the space
+() {   # (a variable, not ${:-…}: there the - of the name is a token and :A gets a broken path)
+  local link=$HOME/.local/share/terminal-setup
+  [[ $TERMINAL_SETUP == *[[:space:]]* && ${link:A} == $TERMINAL_SETUP ]] && TERMINAL_SETUP=$link
+}
 setopt extended_glob
 
 B=$'\e[1m' D=$'\e[2m' C=$'\e[36m' G=$'\e[32m' Y=$'\e[33m' R=$'\e[31m' M=$'\e[35m' X=$'\e[0m'
-SELF=${0:A}
+SELF=$TERMINAL_SETUP/tmux/terminal.zsh
 TAB=$'\t'
 
 # ─────────────── Helpers ───────────────
@@ -50,18 +57,73 @@ session_exists() { tmux has-session -t "=$1" 2>/dev/null }
 session_names()  { tmux ls -F '#{session_name}' 2>/dev/null }
 current_session() { [[ -n $TMUX ]] && tmux display -p '#S' 2>/dev/null }
 
-# tmux does not allow "." or ":" in session names; spaces around go, and a leading "-"
+# tmux does not allow "." or ":" in session names, expands "#" and ends a command at a
+# trailing ";" (all four become -); spaces around go, and a leading "-"
 # would be read as an option
 clean_name() {
   local n=${${1##[[:space:]]#}%%[[:space:]]#}
-  n=${${n//[.:]/-}//[[:space:]]##/-}
+  n=${${n//[.:#;]/-}//[[:space:]]##/-}
   print -r -- ${n##-#}
 }
 
-# a closed session's description must not pass to a new session with the same name
+# ─────────────── Start session (new terminals open it) ───────────────
+# ~/.tmux/start-session: "name<TAB>folder" (the folder to create it in when it is not running)
+START_FILE=~/.tmux/start-session
+
+start_get() {                 # prints "name<TAB>folder", or nothing (= the system monitor)
+  [[ -r $START_FILE ]] || return 0
+  local line; IFS= read -r line < $START_FILE
+  [[ -n ${line%%$TAB*} && ${line%%$TAB*} != system ]] && print -r -- "$line"
+}
+
+start_set() {                 # start_set <name> [folder] · system (or nothing) = back to the monitor
+  local name=$(clean_name "$1") dir=${2:-}
+  if [[ -z $name || $name == system ]]; then
+    rm -f $START_FILE; return
+  fi
+  [[ -z $dir ]] && session_exists "$name" && dir=$(tmux display -p -t "=$name:" '#{session_path}' 2>/dev/null)
+  [[ -z $dir ]] && dir=$PWD
+  [[ $dir == '~'(/*|) ]] && dir=$HOME${dir#\~}
+  mkdir -p ${START_FILE:h}
+  print -r -- "$name$TAB$dir" > $START_FILE
+}
+
+start_renamed() {             # the start session was renamed: follow it
+  local line=$(start_get)
+  [[ ${line%%$TAB*} == $1 ]] && print -r -- "$2$TAB${line#*$TAB}" > $START_FILE
+}
+
+start_cmd() {
+  case $1 in
+    "")
+      local line=$(start_get)
+      if [[ -z $line ]]; then
+        print -r -- "New terminals open the ${B}system${X} monitor ${D}(terminal start NAME changes it)${X}"
+      else
+        local name=${line%%$TAB*} dir=${line#*$TAB}
+        print -r -- "New terminals open ${B}$name${X} ${D}· created in ${dir/#$HOME/~} when it is not running"
+        print -r -- "${D}terminal start system goes back to the monitor${X}"
+      fi ;;
+    -r|--reset|reset|system)
+      start_set system; ok "new terminals open the system monitor" ;;
+    *)
+      start_set "$1" "$2" || return
+      local line=$(start_get)
+      ok "new terminals open ${B}${line%%$TAB*}${X} ${D}(created in ${${line#*$TAB}/#$HOME/~} when it is not running)${X}" ;;
+  esac
+}
+
+# a closed session's description must not pass to a new session with the same name ·
+# every closed session forgets its own (the session-closed hook: kill-all closes several at
+# once, so one at a time, each with its own temp file)
 forget_description() {
-  local f=~/.tmux/descriptions.tsv
-  [[ -f $f ]] && awk -F'\t' -v n="$1" '$1 != n' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  local f=~/.tmux/descriptions.tsv fd
+  [[ -f $f ]] || return 0
+  : >> "$f.lock"                                   # (zsystem flock only locks a file that is there)
+  zmodload -F zsh/system b:zsystem 2>/dev/null && zsystem flock -t 5 -f fd "$f.lock" 2>/dev/null
+  awk -F'\t' -v n="$1" '$1 != n' "$f" > "$f.$$.tmp" && mv "$f.$$.tmp" "$f"
+  [[ -n $fd ]] && zsystem flock -u $fd
+  return 0
 }
 
 # rename_session <old> <new>: also moves its description (picker → Describe…). The system
@@ -71,6 +133,7 @@ rename_session() {
   [[ -z $new || $new == $old ]] && return 0
   [[ $old == system || $new == system ]] && { fail "the system monitor keeps its name"; return 1 }
   tmux rename-session -t "=$old" -- "$new" || return
+  start_renamed "$old" "$new"
   [[ -f $f ]] && awk -F'\t' -v o="$old" -v n="$new" 'BEGIN { OFS = FS } $1 == o { $1 = n } { print }' "$f" > "$f.tmp" \
     && mv "$f.tmp" "$f"
   ok "$old → ${B}$new${X}"
@@ -207,7 +270,7 @@ pick() {
 # ─────────────── Auto-start (new Windows Terminal tab) ───────────────
 
 # Start the server so continuum restores the last saved sessions, wait for
-# them to appear, then open the system monitor session.
+# them to appear, then open the start session (terminal start), else the system monitor.
 autostart() {
   if ! server_running; then
     tmux start-server
@@ -220,26 +283,39 @@ autostart() {
   # a session to work in, next to the monitor, whenever it is missing (after the restore,
   # so a saved one comes back as it was). It starts in ~/dev (or ~ when there is none).
   # Name: TERMINAL_DEFAULT_SESSION in ~/.zshrc (default dev; empty: none)
-  local def=$(clean_name "${TERMINAL_DEFAULT_SESSION-dev}") dir=$HOME/dev
-  [[ -d $dir ]] || dir=$HOME
+  local def=$(clean_name "${TERMINAL_DEFAULT_SESSION-dev}") def_dir=$HOME/dev
+  [[ -d $def_dir ]] || def_dir=$HOME
   if [[ -n $def && $def != system ]] && ! session_exists "$def"; then
-    tmux new-session -d -s "$def" -c "$dir"
+    tmux new-session -d -s "$def" -c "$def_dir"
   fi
 
+  # the start session chosen with `terminal start` (created in its folder when it is not
+  # running: closed, or not in the last save); the monitor is built meanwhile, in the background
+  local line=$(start_get) name dir
+  if [[ -n $line ]]; then
+    name=${line%%$TAB*} dir=${line#*$TAB}
+    ( $TERMINAL_SETUP/tmux/system.sh ensure &>/dev/null & )
+    [[ -d $dir ]] || dir=$HOME
+    open_session "$name" "$dir" && return
+    fail "could not open the start session $name: the system monitor instead"
+  fi
   # straight into the system monitor (tmux/system.sh); Ctrl+a s switches session,
   # Ctrl+a d leaves tmux and comes back to this shell
   $TERMINAL_SETUP/tmux/system.sh && return
   print -r -- "${D}Plain shell. Run ${X}${C}terminal${X}${D} any time to open the session picker.${X}"
 }
 
-# Poll until restored sessions stop appearing (max ~8s)
+# Wait until the saved sessions are back: tmux-resurrect says so (@restored, its post-restore
+# hook), else until restored sessions stop appearing · `system` is not counted (it is built at
+# once, before continuum even starts restoring) · at most ~8 s
 wait_for_restore() {
   local i count last=-1 stable=0
   print -n -- "${D}Restoring saved sessions…${X}"
   for i in {1..40}; do
-    count=$(session_names | wc -l | tr -d ' ')
-    if (( count > 0 && count == last )); then
-      (( ++stable >= 4 )) && break
+    [[ $(tmux show -gqv @restored 2>/dev/null) == 1 ]] && break
+    count=$(session_names | grep -cvx system)
+    if (( count == last )); then              # nothing new for 1 s (or 2 s with nothing at all): done
+      (( ++stable >= (count > 0 ? 5 : 10) )) && break
     else
       stable=0
     fi
@@ -271,7 +347,7 @@ rename() {
 help() {
   cat <<EOF
 
-  ${B}${C}▌ terminal${X}  ${D}tmux session manager${X}
+  ${B}${C}▌ terminal${X}  ${D}tmux session manager · terminal-setup $(setup_version)${X}
 
   ${B}COMMANDS${X}
     ${Y}terminal${X}                       session picker
@@ -280,22 +356,30 @@ help() {
     ${Y}terminal rename${X} <old> <new>    rename a session
     ${Y}terminal kill${X} <name>           kill a session
     ${Y}terminal kill-all${X}              kill every session (the system monitor stays)
-    ${Y}terminal system${X}                system monitor ${D}(info · processes & ports · packages · docker · opens in new tabs)${X}
+    ${Y}terminal system${X}                system monitor ${D}(info · processes & ports · disk · packages · ssh · docker · git · opens in new tabs)${X}
     ${Y}terminal system restart${X}        rebuild the system monitor
+    ${Y}terminal start${X} [name|system]   the session new terminals open ${D}(default: the system monitor)${X}
     ${Y}terminal guide${X} [words]         every shortcut ${D}(same as Ctrl+a ? inside tmux, or ${X}${Y}keys${X}${D})${X}
     ${Y}keys${X} [words]                   the same guide · ${D}keys git: opens searching for git${X}
     ${Y}keys -p${X} [words]                print them in the terminal ${D}(no popup)${X}
     ${Y}ghelp${X}                          git and GitHub shortcuts, in the terminal
     ${Y}terminal files${X}                 every file the install put on this machine, and what it is for
+    ${Y}terminal version${X}               which version of terminal-setup this is ${D}(CHANGELOG.md: what each one brought)${X}
     ${Y}terminal help${X}                  this panel
 
   ${B}SESSIONS${X}  ${D}(${G}●${D} attached · ${M}▶${D} current)${X}
 $(list)
 
   ${D}Inside tmux: ${X}${C}Ctrl+a Space${X}${D} quick menu · ${X}${C}Ctrl+a ?${X}${D} guide · ${X}${C}Ctrl+a s${X}${D} this picker${X}
+  ${D}New terminals open: ${X}$(local l=$(start_get); print -r -- ${${l%%$TAB*}:-system})${D} · ${X}${C}terminal start NAME${X}${D} changes it (or Ctrl+s in the picker)${X}
   ${D}Disable auto-start: add ${X}export TERMINAL_NO_AUTOSTART=1${D} to ~/.zshrc, above the terminal-setup line${X}
 
 EOF
+}
+
+# v1.0.0 · v1.0.0-3-gabc1234 (3 commits after it) · -dirty (changes not committed) · as install/lib.sh's repo_version
+setup_version() {
+  git -C $TERMINAL_SETUP describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || print unknown
 }
 
 # ─────────────── Entry point ───────────────
@@ -340,7 +424,20 @@ case "$1" in
   guide|g)          exec $TERMINAL_SETUP/tmux/guide.zsh "${@:2}" ;;
   files|f)          exec bash $TERMINAL_SETUP/install/files.sh ;;
   system|sys)       exec $TERMINAL_SETUP/tmux/system.sh ${2:-open} ;;
+  start)            start_cmd "$2" "$3" ;;
+  # Ctrl+a $ renamed a session: its description and the start session follow (the old name in @rename-from)
+  _renamed)         local old=$(tmux show -gqv @rename-from) new=$(tmux display -p '#S')
+                    tmux set -gu @rename-from
+                    [[ -n $old && -n $new && $old != $new ]] || exit 0
+                    start_renamed "$old" "$new"
+                    f=~/.tmux/descriptions.tsv
+                    [[ -f $f ]] && awk -F'\t' -v o="$old" -v n="$new" 'BEGIN { OFS = FS } $1 == o { $1 = n } { print }' "$f" > "$f.tmp" \
+                      && mv "$f.tmp" "$f" ;;
   help|h|-h|--help) help ;;
+  version|-v|--version) print -r -- "terminal-setup $(setup_version)" ;;
+  # a session closed (any way: Ctrl+a X, its last tab or shell, the session tree…) · not at
+  # kill-server or when tmux itself is ended: no hook runs then, and the descriptions come back
+  _closed)          [[ -n $2 ]] && forget_description "$2" ;;
   _preview)         preview "$2" "$3" ;;
   _names)           session_names ;;                 # for zsh completion
   *)                fail "unknown command: $1"; help; exit 1 ;;

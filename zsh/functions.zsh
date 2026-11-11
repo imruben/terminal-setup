@@ -6,23 +6,42 @@ _maint_step() {
 }
 
 # update / clean: every package manager there is on this system (apt, snap, Homebrew),
+# the tools that update themselves (uv, pnpm, Composer, Node LTS through fnm),
 # plus the zsh and tmux plugins. macOS updates itself from System Settings.
 update() {
   local -a _maint_failed
   (( $+commands[apt-get] )) && \
-    _maint_step "apt" eval 'sudo apt update && sudo apt full-upgrade -y && sudo apt autoremove --purge -y'
+    # a config file you changed that a new version also changes: yours stays (the new one as
+    # .dpkg-dist), never a question that would stop an unattended update (make install YES=1)
+    _maint_step "apt" eval 'sudo apt update && sudo env DEBIAN_FRONTEND=noninteractive apt full-upgrade -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold && sudo apt autoremove --purge -y'
   (( $+commands[snap] )) && _maint_step "snap" sudo snap refresh
   (( $+commands[brew] )) && _maint_step "brew" eval 'brew update && brew upgrade'
+  # installed with their own installers (Homebrew's copies are updated by brew above)
+  _maint_self_updating uv && _maint_step "uv" uv self update
+  _maint_self_updating pnpm && _maint_step "pnpm" pnpm self-update
+  _maint_self_updating composer && _maint_step "composer" composer self-update
+  # Node: the newest LTS becomes the default (the versions you had stay: fnm list · fnm uninstall)
+  (( $+commands[fnm] )) && _maint_step "node (fnm, latest LTS)" eval \
+    'fnm install --lts 2>&1 | grep -v "already installed"; fnm default lts-latest'
   [[ -d ~/.zsh/plugins/fzf-tab ]] && _maint_step "fzf-tab" git -C ~/.zsh/plugins/fzf-tab pull -q
+  (( $+commands[tldr] )) && _maint_step "tldr pages" eval 'tldr --update >/dev/null'
   # tmux plugins (tpm reads the list from the running server)
   [[ -x ~/.tmux/plugins/tpm/bin/update_plugins ]] && tmux info &>/dev/null \
     && _maint_step "tmux plugins" ~/.tmux/plugins/tpm/bin/update_plugins all
-  tmux set -g @pkgs-changed "$(date +%s%N)" 2>/dev/null      # the tmux Packages / Updates panes re-read
+  tmux set -g @pkgs-changed "$EPOCHREALTIME" 2>/dev/null      # the tmux Packages / Updates panes re-read
   if (( $#_maint_failed )); then
     echo "⚠️  Update finished with errors in: ${(j:, :)_maint_failed}"; return 1
   fi
   echo "✅ Update Completed"
 }
+
+# a tool that updates itself: installed, and not by a package manager (apt / Homebrew own theirs)
+_maint_self_updating() {
+  (( $+commands[$1] )) || return 1
+  [[ ${commands[$1]:A} != (/usr/*|${HOMEBREW_PREFIX:-/nonexistent}/*) ]]
+}
+
+zmodload -F zsh/datetime p:EPOCHREALTIME 2>/dev/null   # change stamps for the tmux panes (macOS date has no %N)
 
 clean() {
   local -a _maint_failed
@@ -39,7 +58,12 @@ clean() {
   # brew: dependencies nothing needs any more, old versions and the download cache
   (( $+commands[brew] )) && _maint_step "brew" eval 'brew autoremove && brew cleanup --prune=all'
   (( $+commands[docker] )) && _maint_step "docker build cache" eval 'docker builder prune -f 2>/dev/null; true'
-  tmux set -g @pkgs-changed "$(date +%s%N)" 2>/dev/null
+  # language caches: everything in them comes back from the internet when it is needed again
+  (( $+commands[uv] )) && _maint_step "uv cache" uv cache prune
+  (( $+commands[pnpm] )) && _maint_step "pnpm store" pnpm store prune
+  (( $+commands[npm] )) && _maint_step "npm cache" npm cache clean --force --loglevel=error
+  (( $+commands[composer] )) && _maint_step "composer cache" composer clear-cache -q
+  tmux set -g @pkgs-changed "$EPOCHREALTIME" 2>/dev/null
   if (( $#_maint_failed )); then
     echo "⚠️  Clean up finished with errors in: ${(j:, :)_maint_failed}"; return 1
   fi
@@ -343,7 +367,8 @@ installed-packages() {
   local base=~/.apt-base.txt notes=~/.apt-notes.tsv rebuild=0 pkg only p d k s n v r
   local -a hits
   local -A note
-  [[ -r $notes ]] && while IFS=$'\t' read -r p d; do
+  # (|| [[ -n $p ]]: the last line counts too when the file does not end in a newline)
+  [[ -r $notes ]] && while IFS=$'\t' read -r p d || [[ -n $p ]]; do
     [[ -n $p ]] && note[$p]="$d"
   done < $notes
 
@@ -358,14 +383,16 @@ installed-packages() {
         [[ -n $pkg ]] || { print "Usage: installed-packages <package> --note [reason]"; return 1 }
         shift
         if (( $# )); then
-          note[$pkg]="${*//$'\t'/ }"
+          note[$pkg]="${${*//$'\t'/ }//$'\n'/ }"
           print "✅ Note saved for $pkg"
         else
           unset "note[$pkg]"
           print "✅ Note removed for $pkg"
         fi
-        for k in ${(ko)note}; do print -r -- "$k"$'\t'"${note[$k]}"; done > $notes
-        (( $+commands[tmux] )) && tmux set -g @pkgs-changed "$(date +%s%N)" 2>/dev/null   # tmux panes too
+        # a new file that takes the old one's place (through a link: its target), like the panes do
+        local target=${notes:A}
+        for k in ${(ko)note}; do print -r -- "$k"$'\t'"${note[$k]}"; done > $target.tmp$$ && mv $target.tmp$$ $target
+        (( $+commands[tmux] )) && tmux set -g @pkgs-notes "$EPOCHREALTIME" 2>/dev/null   # tmux panes too
         return 0 ;;
       -h|--help)
         print "Usage: installed-packages [package] [options]"
@@ -457,7 +484,7 @@ _installed-packages() {
   local p d s v
   local -a items opts
   local -A note
-  [[ -r ~/.apt-notes.tsv ]] && while IFS=$'\t' read -r p d; do
+  [[ -r ~/.apt-notes.tsv ]] && while IFS=$'\t' read -r p d || [[ -n $p ]]; do
     note[$p]="$d"
   done < ~/.apt-notes.tsv
 
@@ -515,7 +542,8 @@ _terminal() {
     local -a cmds=(
       'open:open or create a session' 'list:list sessions' 'rename:rename a session'
       'kill:kill a session' 'kill-all:kill every session (the system monitor stays)' 'guide:searchable tmux guide'
-      'system:the system monitor' 'files:every file the install put here, and what it is for' 'help:show help')
+      'system:the system monitor' 'files:every file the install put here, and what it is for'
+      'version:which version of terminal-setup this is' 'help:show help')
     _describe command cmds
   elif (( CURRENT == 3 )) && [[ $words[2] == (open|o|kill|k|rename|mv) ]]; then
     local -a sessions=(${(f)"$($TERMINAL_SETUP/tmux/terminal.zsh _names)"})
@@ -525,3 +553,65 @@ _terminal() {
   fi
 }
 (( $+functions[compdef] )) && compdef _terminal terminal
+
+# ─── files and folders ───
+
+# rgf <text> [rg options]: search inside files, pick a match (preview with the line
+# highlighted) and open the editor on that line · rgf -t py "def main"
+rgf() {
+  (( $# )) || { echo "usage: rgf <text> [rg options]"; return 1 }
+  local sel
+  sel=$(rg --line-number --no-heading --color=always --smart-case "$@" |
+    fzf --ansi --delimiter : --nth '3..' \
+      --preview 'bat --color=always --style=numbers --highlight-line {2} {1}' \
+      --preview-window 'right,60%,+{2}+3/3,~3') || return
+  local file=${sel%%:*} rest=${sel#*:}
+  ${=EDITOR:-micro} "+${rest%%:*}" "$file"      # (= : EDITOR="code --wait" is a command and its option)
+}
+
+# fe [pattern]: pick files by name (Tab marks several) and open them in the editor
+fe() {
+  local -a files
+  files=("${(@f)$(fd --type f --hidden --exclude .git "$@" |
+    fzf -m --preview 'bat -n --color=always --line-range :200 {}')}")
+  (( $#files )) && [[ -n $files[1] ]] && ${=EDITOR:-micro} "${files[@]}"
+}
+
+# mkcd <dir>: create a folder (and its parents) and go into it
+mkcd() { [[ -n $1 ]] || { echo "usage: mkcd <dir>"; return 1 }; mkdir -p -- "$1" && cd -- "$1" }
+
+# extract <file>…: unpack any archive into the current folder
+extract() {
+  (( $# )) || { echo "usage: extract <file>…"; return 1 }
+  local f out
+  for f in "$@"; do
+    [[ -f $f ]] || { echo "extract: $f: no such file"; return 1 }
+    # a single compressed file (x.gz) → ./x: here, not next to the archive (gunzip -k would
+    # write ~/Downloads/x), and never over a file that is already here
+    out=${${f:t}%.*}
+    if [[ ${f:l} != *.tar.* && ${f:l} == *.(gz|xz|bz2|zst) && -e $out ]]; then
+      echo "extract: $out is already here"; return 1
+    fi
+    case ${f:l} in
+      *.tar|*.tar.*|*.tgz|*.tbz2|*.txz|*.tzst) tar -xf "$f" ;;   # tar works out the compression
+      *.zip|*.jar|*.whl) unzip -q "$f" ;;
+      *.gz)  gunzip -c "$f" > "$out" || { rm -f -- "$out"; false } ;;
+      *.xz)  unxz -c "$f" > "$out" || { rm -f -- "$out"; false } ;;
+      *.bz2) bunzip2 -c "$f" > "$out" || { rm -f -- "$out"; false } ;;
+      *.zst) zstd -dcq "$f" > "$out" || { rm -f -- "$out"; false } ;;
+      *.7z)  7z x "$f" ;;
+      *.rar) unrar x "$f" ;;
+      *) echo "extract: $f: unknown archive type"; return 1 ;;
+    esac || return
+  done
+}
+
+# serve [port]: a web server for this folder on http://localhost:<port> (8000)
+# PHP's when there is an index.php (or public/index.php), Python's otherwise
+serve() {
+  local port=${1:-8000}
+  if (( $+commands[php] )) && [[ -f public/index.php ]]; then php -S "localhost:$port" -t public
+  elif (( $+commands[php] )) && [[ -f index.php ]]; then php -S "localhost:$port"
+  else python3 -m http.server "$port" --bind 127.0.0.1
+  fi
+}

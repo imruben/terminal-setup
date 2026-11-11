@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # ═══════════════════════════════════════════════════════════════
 #  terminal-setup · packages on macOS, with Homebrew (install/Brewfile)
 #  Homebrew itself is installed first when it is missing (it asks for your
@@ -47,13 +48,17 @@ brew_install() {
     if [ "${DRY_RUN:-0}" = 1 ]; then
       info "[dry-run] install Homebrew (https://brew.sh's install.sh)"
     else
-      /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+      # --yes: Homebrew's own "Press RETURN to continue" too
+      NONINTERACTIVE=$([ "${ASSUME_YES:-0}" = 1 ] && echo 1) \
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     fi
     BREW=$(brew_bin)
     [ -n "$BREW" ] || [ "${DRY_RUN:-0}" = 1 ] || die "Homebrew did not install: see the messages above"
     eval "$("${BREW:-/opt/homebrew/bin/brew}" shellenv 2>/dev/null)"
   fi
-  [ -n "$BREW_MISSING" ] && run "${BREW:-brew}" bundle --file="$REPO/install/Brewfile"
+  # only what is missing: bundle would also upgrade every outdated formula of the Brewfile
+  # (upgrades are `update`'s job, and --no-update means none)
+  [ -n "$BREW_MISSING" ] && run env HOMEBREW_BUNDLE_NO_UPGRADE=1 "${BREW:-brew}" bundle --file="$REPO/install/Brewfile"
   # shellcheck disable=SC2086
   [ -n "$BREW_OLD" ] && run "$BREW" upgrade $BREW_OLD
   ok "Homebrew packages ready"
@@ -72,6 +77,7 @@ macos_fixes() {
     rm -f "$tmp"
     ok "tmux-256color terminal description in ~/.terminfo"
   fi
-  # 2. zsh asks before loading completions from group-writable folders (Homebrew's share/)
-  [ -n "$prefix" ] && run chmod -R go-w "$prefix/share" 2>/dev/null || true
+  # 2. zsh asks before loading completions from group-writable folders: Homebrew's share/zsh
+  #    (only that: on Intel Macs share/ is /usr/local/share, with files that are not Homebrew's)
+  [ -n "$prefix" ] && [ -d "$prefix/share/zsh" ] && run chmod -R go-w "$prefix/share/zsh" 2>/dev/null || true
 }

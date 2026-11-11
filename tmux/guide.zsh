@@ -17,6 +17,12 @@
 
 emulate -L zsh
 export TERMINAL_SETUP=${0:A:h:h}            # the repo (this file is in its tmux/)
+# a repo in a folder with spaces: its link without them (install/lib.sh: repo_path), or the commands
+# this builds for tmux and sh would cut the path at the space
+() {   # (a variable, not ${:-…}: there the - of the name is a token and :A gets a broken path)
+  local link=$HOME/.local/share/terminal-setup
+  [[ $TERMINAL_SETUP == *[[:space:]]* && ${link:A} == $TERMINAL_SETUP ]] && TERMINAL_SETUP=$link
+}
 
 B=$'\e[1m' D=$'\e[2m' C=$'\e[36m' G=$'\e[32m' Y=$'\e[33m' M=$'\e[35m' X=$'\e[0m'
 TAB=$'\t'
@@ -25,7 +31,7 @@ GUIDE=$(cat <<'EOF'
 @@Shortcuts|press Ctrl+a, let go, then the key
 @Everyday|the ones you will use most
 [Ctrl+a] [Space]|Quick menu with the most used actions|@menu
-[Ctrl+a] [?]|This guide|
+[Ctrl+a] [?]  or  [Ctrl+a] [g]|This guide|
 [Ctrl+a] [s]|Switch session · hover previews it, right-click for more|@picker
 [Ctrl+a] [c]|New tab in this folder|new-window -c "#{pane_current_path}"
 [Ctrl+a] [v]|Split side by side|split-window -h -c "#{pane_current_path}"
@@ -54,7 +60,7 @@ click here|Even out the pane sizes|select-layout -E
 click here|Swap with the previous pane|swap-pane -U
 @Sessions|workspaces that keep running in the background
 [Ctrl+a] [N]|New session in this folder|command-prompt -p "New session name:" { new-session -s "%%" -c "#{pane_current_path}" }
-[Ctrl+a] [$]|Rename the session|command-prompt -I "#S" -p "Session name:" { rename-session "%%" }
+[Ctrl+a] [$]|Rename the session · the system monitor keeps its name|@keys:'$'
 [Ctrl+a] [Shift+Tab]|Back to the last session|switch-client -l
 [Ctrl+a] [S]|Session tree · every session and tab, with a live preview|@keys:S
 [Ctrl+a] [X]|Close the session · asks first, then pick another|@keys:X
@@ -63,6 +69,7 @@ click here|Swap with the previous pane|swap-pane -U
 [Ctrl+V]|Paste · Windows Terminal|
 [Ctrl+a] [e]|Extract · pick any word, path, id or line on screen|@keys:e
 [Ctrl+a] [u]|Links · list the URLs on screen and open one in the browser|@keys:u
+[Ctrl+a] [G]|lazygit for the folder of this pane · q closes it|@keys:G
 @Inside copy mode|after Ctrl+a y, or once you scroll with the wheel
 [↑] [↓] [PgUp] [PgDn]|Scroll|
 [g] / [G]|Top / bottom of the history|
@@ -72,6 +79,7 @@ click here|Swap with the previous pane|swap-pane -U
 @Inside popups|session picker, extract, links, this guide
 [Enter]|Open · insert · open the link|
 [Ctrl+n] · [Ctrl+r] · [Ctrl+e] · [Ctrl+x] · [Ctrl+t]|Session picker · new · rename · describe · close (asks first) · tree|
+[Ctrl+s] in the session picker|New terminals open this session · again: back to the system monitor|
 [y] / [n]  or  [Esc]|A question (close, kill, clear…) · or click its answer|
 [Ctrl+y]|Extract and links · copy instead|
 [Ctrl+f] · [Ctrl+g]|Extract · word / path / url / line · this pane or the whole tab|
@@ -85,7 +93,7 @@ click here|Swap with the previous pane|swap-pane -U
 [Ctrl+a] [U]|Update plugins|run-shell ~/.tmux/plugins/tpm/bindings/update_plugins
 [Ctrl+a] [/]|What does a key do? · press it to find out|command-prompt -k -p key { list-keys -1N "%%" }
 [Ctrl+a] [Ctrl+a]|Send Ctrl+a to the program · start of line in the shell|
-@System monitor|the system session · 1 info · 2 monitor (processes, ports) · 3 packages · 4 docker
+@System monitor|the system session · 1 info · 2 monitor (processes, ports) · 3 disk · 4 packages · 5 ssh · 6 docker · 7 git
 [Ctrl+a] [M]|Go to the system monitor · or click CPU / RAM on the bar|@keys:M
 [Right-click] a container|Logs · shell as you or root · open its port · start, restart, stop, pause, kill, remove · compose project (ask first)|
 [Double-click] a port in Containers or Ports|Open http://localhost:PORT in the browser|
@@ -95,18 +103,27 @@ type in Search|Find any apt, snap or brew package · right-click to install it (
 [Right-click] an update|Upgrade it or everything from its source (ask first) · check for updates|
 [Click] all · apt · snap · brew|Show the packages of one source only (on the Packages, Updates and Search titles)|
 [Right-click] a process|Stop · force kill (both ask first) · show its ports · copy PID or command|
+[Double-click] a folder in Folders|Go into it · .. or [Backspace] goes up · a file opens with the system's app|
+[Right-click] a folder|Open · open with the system's app · terminal session here · measure again · delete (asks first)|
+[Right-click] in Cleanup|Clean it (asks first, says how much) · show its folder · run clean|
+[Double-click] a disk|Show its folders (in Folders)|
+[Double-click] a host|Connect in a session of its own (ssh-NAME) · a git host: which account sees your key|
+[Right-click] a host|Connect in a popup · test the login · open / close a tunnel · install your key · edit ~/.ssh/config · add a host|
+[Right-click] a key|Copy the public key · add to / remove from the agent · create a new key|
+[Double-click] a repo|Open it in a session of its own|
+[Right-click] a repo|Fetch · pull (fast-forward only) · push (asks first) · fetch every repo · lazygit · open its page · folders to look in|
 [Right-click] a port|Open in the browser · copy · stop its program (asks first) · show the process or container|
 [Del]|Stop the highlighted process or port program · asks first|
 [↑] [↓] [PgUp] [PgDn] [Home] [End]|Move in a list · the panes next to it follow the highlighted row|
 [Enter] on a row|Its menu (the same as right-click) · ↑↓ and Enter, or the letter in ( ) · Esc closes|
 [←] / [→] in a list|Sort by the previous / next column · [Ctrl+r] reverses the order|
-click a column title|Sort by it · click again to reverse|
+click a column title|Sort by it · again: reverse · a third time: the order the list started with|
 [Tab] / [Shift+Tab] in a package list|Next / previous source · all · apt · snap · brew (or click them)|
 [Double-click] a row|Its main action: open the port in the browser · elsewhere its menu|
 [Wheel] on a long menu|Scroll it · ▲ ▼ on its border show there is more|
 type|Filter the list · Esc or a click on ✕ clears it|
-[Tab] / [←] [→] in details, Logs, Package|Next / previous tab (or click it)|
-[Enter] in details, Logs, Package|Its menu · copy, select text, save, time range, zoom|
+[Tab] / [←] [→] in details, Logs, Package, Host, Repo|Next / previous tab (or click it)|
+[Enter] in details, Logs, Package, Host, Repo|Its menu · copy, select text, save, time range, zoom|
 [Ctrl+a] [X] in system|Restart the monitor (it is always there) · a pane or tab you close comes back by itself|
 [Click] 󰊓 zoom on a pane title|Zoom that pane · 󰊔 restore (or double-click the title)|
 [Double-click] btop, fastfetch, Resources|Zoom it · again to restore|
@@ -130,7 +147,7 @@ type|Filter the list · Esc or a click on ✕ clears it|
 [Right-click] a tab|Tab menu · rename, move, split, close (asks first)|
 [Wheel] on the bar|Previous / next tab|
 [Click] CPU / RAM|Go to the system monitor|@keys:M
-[Click] [◀] / [▶]|Previous / next tab · shown when they do not all fit|
+[Click] [◀] / [▶]|Previous / next tab · shown when they do not all fit (the system monitor's keep their whole names)|
 [Click] the session|Switch session|@picker
 [Right-click] the session|Session menu · switch, new, rename, detach, close|
 [Click] [󰍜]|Quick menu|@menu
@@ -149,14 +166,14 @@ type|Filter the list · Esc or a click on ✕ clears it|
 @Menus & popups|quick menu, this guide, session picker
 [Hover]|Highlights · in the session picker it previews the session|
 [Click]|Runs it or opens it|
-[Right-click] a session|Open, rename, describe, new, session tree, close · close asks first (system: restart)|
+[Right-click] a session|Open, rename, describe, new terminals start here, new, session tree, close · close asks first (system: restart)|
 [Wheel]|Scrolls the list|
 [Click] outside|Closes the menu|
 [Click] an answer|Questions (close a tab, kill a program, clear the history…) · or press y / n · Esc cancels|
 @@Terminal|commands for any shell, also outside tmux
 @Sessions|the terminal command
 terminal|Session picker|@picker
-terminal system|System monitor · also opens in every new Windows Terminal tab|@keys:M
+terminal system|System monitor · new terminals open it (unless terminal start chose another)|@keys:M
 terminal system restart|Rebuild the system monitor|run-shell -b "$TERMINAL_SETUP/tmux/system.sh restart"
 terminal open api ~/dir|Open a session, or create it in that folder (default: here)|
 terminal list|List the sessions|@shell:$TERMINAL_SETUP/tmux/terminal.zsh list; read -sk "?press any key"
@@ -165,8 +182,10 @@ terminal kill name|Close a session · asks first (system: restarts it)|
 terminal kill-all|Close every session but the system monitor · asks first, and saves so they stay closed|
 keys · keys git|This guide, from any shell · with words, it opens already searching for them|
 keys -p split|The same entries printed right in the terminal, no popup · keys -p alone: all of them|
+terminal start name|New terminals open that session (created in its folder if closed) · terminal start system: the monitor|@shell:$TERMINAL_SETUP/tmux/terminal.zsh start; read -sk "?press any key"
 terminal guide|This guide (same as keys)|
 terminal files|Every file the install put on this machine, and what it is for|@shell:bash $TERMINAL_SETUP/install/files.sh | less -R
+terminal version|Which version of terminal-setup this is · CHANGELOG.md says what each one brought|@shell:$TERMINAL_SETUP/tmux/terminal.zsh version; read -sk "?press any key"
 terminal help|Every command|@shell:$TERMINAL_SETUP/tmux/terminal.zsh help; read -sk "?press any key"
 @Git & GitHub|zsh/git.zsh · ghelp prints them in the terminal · the gh ones need `gh auth login` once
 ghelp · ghelp pr|These shortcuts, printed in the terminal · with a word, only the ones that mention it|
@@ -182,6 +201,22 @@ gpr|Pull requests · enter checks one out, ctrl+o opens it in the browser · gpr
 gprc|Push this branch and open its PR from the commits · gprc --draft · gprc --web|
 gprv · gprs · gprm|This PR in the browser (or the repo) · PR status · merge it (asks how)|
 gci|CI of this branch · the PR's checks live until they finish · gci watch follows a run|
+@Shell|functions and aliases of zsh/functions.zsh and zsh/aliases.zsh
+update|Update everything: apt, snap, brew, uv, pnpm, Composer, Node LTS (fnm), tldr pages, plugins|
+clean|Clean caches: apt, journal, snap, brew, Docker build cache, uv, pnpm, npm, Composer|
+rgf text|Search inside files (rg), pick a match with its preview, open the editor on that line|
+fe pattern|Pick files by name (fd · Tab marks several) and open them in the editor|
+z part · zi|Jump to a folder you use often (zoxide) · zi: pick it from a list|
+lg|lazygit · git in the terminal|
+tldr cmd|Short examples of any command (tldr tar)|
+mkcd dir|Create a folder and go into it|
+extract file|Unpack any archive (tar.*, zip, 7z, rar, gz…)|
+serve 8000|Web server for this folder · PHP when there is an index.php, Python otherwise|
+ports · killport 3000|What listens on each port · free one (asks first)|
+dps · dsh|Docker containers at a glance · open a shell in one|
+fkill|Pick processes with fzf and stop them|
+installed-packages|The packages you installed yourself, and why|
+pn · uvr|pnpm · uv run|
 @Settings|in your ~/.zshrc, above the terminal-setup line
 export TERMINAL_NO_AUTOSTART=1|Do not open tmux in new tabs|
 EOF
@@ -252,8 +287,15 @@ fi
 
 # ─────────────── Viewer ───────────────
 # tmux/guide.py shows every entry in one list: hover, click to run, wheel
-# scrolls, type to search. The fzf search below is only the fallback without python3.
-[[ $1 != search ]] && (( $+commands[python3] )) && exec python3 -I $TERMINAL_SETUP/tmux/guide.py "$@"
+# scrolls, type to search. The fzf search below is the fallback without python3, or when the
+# viewer fails (a python3 too old for it): a guide that opens and closes at once helps no one.
+if [[ $1 != search ]] && (( $+commands[python3] )); then
+  err=$(mktemp 2>/dev/null || print /dev/null)
+  python3 -I $TERMINAL_SETUP/tmux/guide.py "$@" 2>$err && { rm -f $err; exit; }
+  print -r -- "${Y}the guide viewer failed (${D}$(tail -1 $err 2>/dev/null)${X}${Y}): the plain list instead${X}"
+  [[ $err != /dev/null ]] && rm -f $err
+  sleep 1
+fi
 
 
 # ─────────────── Search (fzf) ───────────────

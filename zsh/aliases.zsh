@@ -16,3 +16,6 @@ else
   alias l='ls -CF'
 fi
 alias grep='grep --color=auto'
+alias lg='lazygit'
+alias pn='pnpm'
+alias uvr='uv run'

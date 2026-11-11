@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2088  # "~/…" in messages is text to show, not a path
 # ═══════════════════════════════════════════════════════════════
 #  terminal-setup · undo the install
-#    ./uninstall.sh         takes the terminal-setup lines out of ~/.zshrc and ~/.tmux.conf
+#    ./uninstall.sh         takes the terminal-setup lines out of ~/.zshrc, ~/.tmux.conf and ~/.zshenv
 #                           (the rest of those files stays as it is)
 #    ./uninstall.sh --yes   no questions
 #  Packages, the font and the plugins stay installed (other things may use them), and
@@ -12,8 +13,10 @@
 # ═══════════════════════════════════════════════════════════════
 set -euo pipefail
 
-REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+REPO=$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 . "$REPO/install/lib.sh"
+REPO_REAL=$REPO
+[ -e "$(repo_path "$REPO")" ] && REPO=$(repo_path "$REPO")    # a folder with spaces: its link
 ASSUME_YES=0 DRY_RUN=0
 case ${1:-} in -y|--yes) ASSUME_YES=1 ;; "") ;; *) die "unknown option: $1 (./uninstall.sh [--yes])" ;; esac
 BACKUP_DIR="$HOME/.terminal-setup-backup/$(date +%Y%m%d-%H%M%S)"
@@ -22,9 +25,12 @@ BACKUP_DIR="$HOME/.terminal-setup-backup/$(date +%Y%m%d-%H%M%S)"
 printf '\n%sterminal-setup · uninstall%s\n' "$B" "$R"
 step "Plan"
 blocks="" copies="" links=$(links_into_repo)
-for f in .zshrc .tmux.conf; do has_block "$HOME/$f" && { check_marks "$HOME/$f"; blocks="$blocks $f"; }; done
+for f in .zshrc .tmux.conf .zshenv; do has_block "$HOME/$f" && { check_marks "$HOME/$f"; blocks="$blocks $f"; }; done
+# the settings the install copied (and you have not changed since) · an install from before
+# that list existed: every one that is still the repo's
+copied() { if [ -f "$COPIED_LIST" ]; then grep -qxF "$1" "$COPIED_LIST"; else true; fi; }
 while read -r src dst; do
-  [ -n "$src" ] && [ ! -L "$HOME/$dst" ] && cmp -s "$REPO/$src" "$HOME/$dst" && copies="$copies $dst"
+  [ -n "$src" ] && [ ! -L "$HOME/$dst" ] && cmp -s "$REPO/$src" "$HOME/$dst" && copied "$dst" && copies="$copies $dst"
 done <<< "$COPIES"
 [ -n "$blocks" ] && info "take the terminal-setup lines out of:$(printf ' ~/%s' $blocks)"
 [ -n "$copies" ] && info "remove the copied settings:$(printf ' ~/%s' $copies)"
@@ -44,6 +50,7 @@ for f in $blocks; do
   rm -f "$HOME/$f.tmp"
 done
 for f in $copies; do rm "$HOME/$f"; ok "removed ~/$f"; done
+rm -f "$COPIED_LIST"
 
 # ─── an install from before: links into the repo, the old files in a backup ───
 if [ -n "$links" ]; then
@@ -58,7 +65,9 @@ if [ -n "$links" ]; then
     fi
     ok "removed the link ~/$f"
   done
-  old=$(ls -d "$HOME"/.terminal-setup-backup/*/ 2>/dev/null | sort | tail -1 || true); old=${old%/}
+  # the newest backup with a MANIFEST (the one the old install made): this run's own copies
+  # above went to a newer folder, without one
+  old=$(ls -d "$HOME"/.terminal-setup-backup/*/MANIFEST 2>/dev/null | sort | tail -1 || true); old=${old%/MANIFEST}
   if [ -n "$old" ] && [ -f "$old/MANIFEST" ]; then
     while read -r rel; do
       [ -e "$old/$rel" ] || [ -L "$old/$rel" ] || continue
@@ -75,6 +84,11 @@ if [ -n "$links" ]; then
   fi
 fi
 
+# shellcheck disable=SC2033  # tmux's own info command, not our info()
 tmux info >/dev/null 2>&1 && [ -f "$HOME/.tmux.conf" ] && tmux source-file "$HOME/.tmux.conf" >/dev/null 2>&1 || true
+# the link install.sh made for a folder with spaces
+if [ "$REPO" != "$REPO_REAL" ] && [ -L "$REPO" ] && [ "$(readlink "$REPO")" = "$REPO_REAL" ]; then
+  rm "$REPO"; ok "removed the link $(tilde "$REPO") (the repo's folder has spaces)"
+fi
 [ -d "$BACKUP_DIR" ] && printf '\n    A copy of your files as they were: %s\n' "$(tilde "$BACKUP_DIR")"
 printf '\n    Done. Open a new terminal (a running tmux keeps the old key bindings until it restarts).\n\n'

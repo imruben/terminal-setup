@@ -5,10 +5,16 @@
 #    1 info:      fastfetch         │ btop
 #                 Resources         │
 #    2 monitor:   Processes │ Ports                      (interactive: hover, right-click,
-#    3 packages:  Packages  │ Search                      type to filter, click a title
-#                 Updates   │ Package (details)           to sort, Del asks to stop)
-#    4 docker:    Containers (like dps)
+#    3 disk:      Folders   │ Disks                       type to filter, click a title
+#                           │ Cleanup                     to sort, Del asks to stop)
+#    4 packages:  Packages  │ Search
+#                 Updates   │ Package (details)
+#    5 ssh:       Hosts
+#                 Host (details · config · recent) │ Keys
+#    6 docker:    Containers (like dps)
 #                 Container (details · Dockerfile · Compose) │ Logs (live)
+#    7 git:       Repos (the folders of ~/.tmux/git-roots)
+#                 Repo (status · diff · log · branches · stash)
 #
 #  system.sh                 open it (attach, or switch when already in tmux)
 #  system.sh go <client>     switch that client to it (Ctrl+a M, click on CPU/RAM)
@@ -20,19 +26,29 @@
 #  session-closed hook recreates it; it is left out of tmux-resurrect saves.
 # ═══════════════════════════════════════════════════════════════
 
-export TERMINAL_SETUP=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)   # the repo (this file is in its tmux/)
+TERMINAL_SETUP=$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)   # the repo (this file is in its tmux/)
+# a repo in a folder with spaces: its link without them (install/lib.sh: repo_path), or the pane
+# commands and hooks built below would cut the path at the space
+link=$HOME/.local/share/terminal-setup
+[[ $TERMINAL_SETUP == *[[:space:]]* && $(CDPATH='' cd "$link" 2>/dev/null && pwd -P) == "$TERMINAL_SETUP" ]] && TERMINAL_SETUP=$link
+export TERMINAL_SETUP
 S=system
 D=$TERMINAL_SETUP/tmux/system
 KEEP="$D/keep.sh"
 # Resources: header, CPU, RAM, swap, [GPU], WSL disk, C:, Net, Web
 RES_ROWS=8; { command -v nvidia-smi || [[ -x /usr/lib/wsl/lib/nvidia-smi ]]; } &>/dev/null && RES_ROWS=9
-sock=$(tmux display -p '#{socket_path}' 2>/dev/null); sock=${sock:-${TMUX%%,*}}
+# one lock per tmux server, known before the server runs (so `terminal system` with no server and
+# the config's own ensure take the same one): the socket's path, as tmux would make it
+sock=${TMUX%%,*}
+[[ -z $sock ]] && sock=$(tmux display -p '#{socket_path}' 2>/dev/null)
+[[ -z $sock ]] && sock=$(CDPATH='' cd "${TMUX_TMPDIR:-/tmp}" 2>/dev/null && pwd -P)/tmux-$UID/default   # as tmux resolves it (/private/tmp on macOS)
 key=${sock//\//_}
-LOCK=${XDG_RUNTIME_DIR:-/tmp}/tmux-system-$UID${key:+-$key}.lock   # one lock per tmux server
+run_dir=${XDG_RUNTIME_DIR:-/tmp}; [[ -d $run_dir && -w $run_dir ]] || run_dir=/tmp
+LOCK=$run_dir/tmux-system-$UID-$key.lock
 
 build() {
-  local py="python3 -I $TERMINAL_SETUP/tmux" sh="${SHELL:-zsh}"
-  local info res btop procs ports pkgs updates search pkg cont det logs
+  local py="python3 -I $TERMINAL_SETUP/tmux"
+  local info res btop procs ports folders disks clean pkgs updates search pkg hosts hostd keys cont det logs repos repo
   # 1 · info: fastfetch with Resources below it · btop on the right
   tmux ${NOSTART:+-N} new-session -d -s $S -n info -x 200 -y 50 -c "$HOME" "$KEEP $D/info.sh" || return
   info=$(tmux display -p -t "$S:info" '#{pane_id}')
@@ -41,41 +57,77 @@ build() {
   # 2 · monitor: processes and ports (interactive)
   procs=$(tmux new-window -d -t "$S:" -n monitor -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/procs.py")
   ports=$(tmux split-window -h -l 48% -t "$procs" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/ports.py")
-  # 3 · packages: yours · updates │ search all · details of the highlighted one
+  # 3 · disk: what takes the space (like ncdu) │ the disks · what can be cleaned
+  folders=$(tmux new-window -d -t "$S:" -n disk -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/disk_folders.py")
+  disks=$(tmux split-window -h -l 44% -t "$folders" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/disk_mounts.py")
+  clean=$(tmux split-window -v -l 72% -t "$disks" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/disk_cleanup.py")
+  # 4 · packages: yours · updates │ search all · details of the highlighted one
   pkgs=$(tmux new-window -d -t "$S:" -n packages -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/packages.py")
   search=$(tmux split-window -h -l 50% -t "$pkgs" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/pkgsearch.py")
   updates=$(tmux split-window -v -l 40% -t "$pkgs" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/updates.py")
   pkg=$(tmux split-window -v -l 55% -t "$search" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/pkginfo.py")
-  # 4 · docker: containers (like dps) on top · details + Dockerfile │ live logs
+  # 5 · ssh: the hosts of ~/.ssh/config on top · the highlighted one │ your keys and the agent
+  hosts=$(tmux new-window -d -t "$S:" -n ssh -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/ssh_hosts.py")
+  hostd=$(tmux split-window -v -l 58% -t "$hosts" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/ssh_host.py")
+  keys=$(tmux split-window -h -l 46% -t "$hostd" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/ssh_keys.py")
+  # 6 · docker: containers (like dps) on top · details + Dockerfile │ live logs
   cont=$(tmux new-window -d -t "$S:" -n docker -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/docker.py")
   det=$(tmux split-window -v -l 62% -t "$cont" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/docker_details.py")
   logs=$(tmux split-window -h -l 52% -t "$det" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/docker_logs.py")
+  # 7 · git: your repos on top · the highlighted one below
+  repos=$(tmux new-window -d -t "$S:" -n git -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/git_repos.py")
+  repo=$(tmux split-window -v -l 58% -t "$repos" -c "$HOME" -P -F '#{pane_id}' "$KEEP $py/git_repo.py")
 
-  local pair
+  # the panes' labels and the tabs' icons: one tmux command list (27 tmux runs before)
+  local pair w cmds=()
   for pair in "$info=Info" "$res=Resources" "$btop=btop" "$procs=Processes" "$ports=Ports" \
+              "$folders=Folders" "$disks=Disks" "$clean=Cleanup" \
               "$pkgs=Packages" "$updates=Updates" "$search=Search" "$pkg=Package" \
-              "$cont=Containers" "$det=Container" "$logs=Logs"; do
-    tmux set -p -t "${pair%%=*}" @label "${pair#*=}"
+              "$hosts=Hosts" "$hostd=Host" "$keys=Keys" \
+              "$cont=Containers" "$det=Container" "$logs=Logs" "$repos=Repos" "$repo=Repo"; do
+    cmds+=(set -p -t "${pair%%=*}" @label "${pair#*=}" \;)
   done
-  local w
-  for w in info:󰋽 monitor:󰐰 packages:󰏗 docker:󰡨; do
-    tmux set -w -t "$S:${w%%:*}" automatic-rename off \; set -w -t "$S:${w%%:*}" @icon "${w#*:}"
+  for w in info:󰋽 monitor:󰐰 disk:󰋊 packages:󰏗 ssh:󰣀 docker:󰡨 git:󰊢; do
+    cmds+=(set -w -t "$S:${w%%:*}" automatic-rename off \; set -w -t "$S:${w%%:*}" @icon "${w#*:}" \;)
   done
+  tmux "${cmds[@]}"
   # When the Info tab changes size (fullscreen, a client of another size…): keep Resources
   # at its height and give btop the boxes that fit (tmux/system/info-fit.sh)
   tmux resize-pane -t "$res" -y $RES_ROWS \
-     \; set-hook -w -t "$S:info" window-resized "run-shell -b '$D/info-fit.sh $res $btop $RES_ROWS'"
+     \; set-hook -w -t "$S:info" window-resized "run-shell -b '$D/info-fit.sh $res $btop $RES_ROWS'" \
+     \; set -w -t "$S:info" @fit-cmd "$D/info-fit.sh $res $btop $RES_ROWS"       # also after unzoom (after-zoom.sh)
   "$D/info-fit.sh" "$res" "$btop" "$RES_ROWS"
-  # same for the docker tab: the Containers list keeps a useful height (tmux/system/docker-fit.sh)
-  tmux set-hook -w -t "$S:docker" window-resized "run-shell -b '$D/docker-fit.sh $cont'"
-  "$D/docker-fit.sh" "$cont"
-  tmux set -t "$S:" @description "System · info, processes & ports, packages, docker"
+  # same for the tabs with a list on top: it keeps a useful height (tmux/system/top-fit.sh)
+  local fit tab top pct
+  for fit in "docker $cont 38" "ssh $hosts 42" "git $repos 42"; do
+    read -r tab top pct <<< "$fit"
+    tmux set-hook -w -t "$S:$tab" window-resized "run-shell -b '$D/top-fit.sh $top $pct'" \
+       \; set -w -t "$S:$tab" @fit-cmd "$D/top-fit.sh $top $pct"
+    "$D/top-fit.sh" "$top" "$pct"
+  done
+  # and Disks keeps the height of its list, Cleanup below gets the rest (tmux/system/disk-fit.sh)
+  tmux set-hook -w -t "$S:disk" window-resized "run-shell -b '$D/disk-fit.sh $disks'" \
+     \; set -w -t "$S:disk" @fit-cmd "$D/disk-fit.sh $disks"
+  tmux set -t "$S:" @description "System · info, processes & ports, disk, packages, ssh, docker, git"
+  note_panes
   tmux select-window -t "$S:info" \; select-pane -t "$info"
+}
+
+# How many panes each monitor tab has, in its @panes: the layout hook (tmux.conf) only runs a
+# repair when that number changes (a pane closed), not on every border dragged · a pane of your
+# own split into a tab is counted on the next look, so it costs one repair, not one per drag
+note_panes() {
+  local w n has cmds=()
+  while read -r w n has; do
+    [[ $has == 1 ]] && cmds+=(set -w -t "$w" @panes "$n" \;)
+  done < <(tmux list-windows -t "=$S" -F '#{window_id} #{window_panes} #{?#{@icon},1,0}' 2>/dev/null)
+  (( ${#cmds[@]} )) && tmux "${cmds[@]}"
 }
 
 # Every labelled pane must be there (extra tabs of your own are fine); anything missing
 # (a pane was closed, an old save brought it back without its programs) → rebuild.
-NEEDED="Container Containers Info Logs Package Packages Ports Processes Resources Search Updates btop"
+NEEDED="Cleanup Container Containers Disks Folders Host Hosts Info Keys Logs Package Packages Ports Processes
+        Repo Repos Resources Search Updates btop"
 healthy() {
   local have; have=" $(tmux list-panes -s -t "=$S" -F '#{@label}' 2>/dev/null | tr '\n' ' ') "
   local l; for l in $NEEDED; do [[ $have == *" $l "* ]] || return 1; done
@@ -84,16 +136,38 @@ healthy() {
 # Serialise ensure / restart (hooks and new tabs may run them at the same time). The lock
 # lives in a subshell so it is released as soon as the work is done, never held by an
 # attached client; -w 5 so nothing can ever wait on it for long.
-locked() { ( flock -w 5 9; "$@" ) 9>"$LOCK"; }
+# another build still running after 5 s: it does it · no flock at all (macOS without Homebrew's
+# on PATH): a mkdir lock instead (mkdir is atomic too). Never unlocked: every split of a build
+# fires a repair, which would see the half-built session as broken and start another build.
+mkdir_lock() {   # $1: seconds to wait · a lock left by a build that died (2 min old) is taken over
+  local n=$(( $1 * 10 ))
+  until mkdir "$LOCK.d" 2>/dev/null; do
+    if [[ -n $(find "$LOCK.d" -maxdepth 0 -mmin +2 2>/dev/null) ]]; then rmdir "$LOCK.d" 2>/dev/null; continue; fi
+    (( n-- > 0 )) || return 1
+    sleep 0.1
+  done
+}
+locked() {   # $1: seconds to wait (0: give up at once), then the command
+  local wait=$1; shift
+  if command -v flock >/dev/null; then
+    ( flock -w "$wait" 9 || exit 0; "$@" ) 9>"$LOCK"
+  else
+    mkdir_lock "$wait" || return 0
+    "$@"; local rc=$?
+    rmdir "$LOCK.d" 2>/dev/null
+    return $rc
+  fi
+}
 
 ensure_now() {
   if tmux has-session -t "=$S" 2>/dev/null; then
-    healthy && return 0
+    healthy && { note_panes; return 0; }
     # broken (a pane was closed, or an old save brought it back without its programs):
     # build a fresh copy next to it, then swap names · you stay on the tab you were on
     local was; was=$(tmux display -p -t "$S:" '#W' 2>/dev/null)
     tmux rename-session -t "=$S" "$S-old"
     build
+    keep_own_tabs                                  # first: the tab you were on may be one of yours
     [[ -n $was ]] && tmux select-window -t "$S:$was" 2>/dev/null
     tmux list-clients -t "$S-old" -F '#{client_name}' | while read -r c; do tmux switch-client -c "$c" -t "=$S"; done
     tmux kill-session -t "=$S-old"
@@ -106,9 +180,20 @@ restart_now() {
   local was; was=$(tmux display -p -t "$S:" '#W' 2>/dev/null)
   tmux rename-session -t "=$S" "$S-old" 2>/dev/null
   build
+  keep_own_tabs
   [[ -n $was ]] && tmux select-window -t "$S:$was" 2>/dev/null
   tmux list-clients -t "$S-old" -F '#{client_name}' 2>/dev/null | while read -r c; do tmux switch-client -c "$c" -t "=$S"; done
   tmux kill-session -t "=$S-old" 2>/dev/null
+}
+
+# Tabs of your own inside the monitor (no pane of theirs is a monitor pane) move to the new
+# one instead of going with the old session
+keep_own_tabs() {
+  local w labels
+  tmux list-windows -t "=$S-old" -F '#{window_id}' 2>/dev/null | while read -r w; do
+    labels=$(tmux list-panes -t "$w" -F '#{@label}' 2>/dev/null | tr -d '\n')
+    [[ -z $labels ]] && tmux move-window -s "$w" -t "$S:" 2>/dev/null
+  done
 }
 
 # Session descriptions (picker → Describe…) live in ~/.tmux/descriptions.tsv; put them back
@@ -122,7 +207,7 @@ sync_descriptions() {
   done < ~/.tmux/descriptions.tsv
 }
 
-ensure() { locked ensure_now; sync_descriptions; }
+ensure() { locked 5 ensure_now; sync_descriptions; }
 
 # Hooks run these while tmux may be shutting down (kill-server closes every session, and
 # session-closed fires): they must never start a new, invisible server. NOSTART → `tmux -N`.
@@ -131,8 +216,8 @@ server_up() { tmux -N start-server 2>/dev/null; }   # -N: only asks, never start
 case $1 in
   ensure|-d) server_up || exit 0; NOSTART=1; ensure ;;
   # from hooks (a pane / tab of system was closed): never queue up behind a build in progress
-  repair)    server_up || exit 0; NOSTART=1; ( flock -n 9 || exit 0; ensure_now ) 9>"$LOCK" ;;
-  restart)   server_up || exit 0; NOSTART=1; locked restart_now ;;
+  repair)    server_up || exit 0; NOSTART=1; locked 0 ensure_now ;;
+  restart)   server_up || exit 0; NOSTART=1; locked 5 restart_now ;;
   go)        NOSTART=1; ensure; tmux switch-client ${2:+-c "$2"} -t "=$S" ;;
   ""|open)   if ! tmux show -gv exit-empty &>/dev/null; then tmux start-server; fi
              ensure

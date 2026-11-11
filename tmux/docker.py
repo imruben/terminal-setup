@@ -16,7 +16,9 @@ import json
 import os
 import platform
 import re
+import select
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -25,11 +27,14 @@ import time
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import tmuxlink
+from background import Background
 from table import Column, TableApp, run
 from tui import DIM, RED, TEXT, YELLOW
 
-HOST_ARCH = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(platform.machine(),
-                                                                                         platform.machine())
+ARCH = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64", "armv7l": "arm", "armv6l": "arm",
+        "i686": "386", "i386": "386", "ppc64le": "ppc64le", "s390x": "s390x", "riscv64": "riscv64"}
+HOST_ARCH = ARCH.get(platform.machine(), platform.machine())     # until the daemon says (it may be remote)
+WEB_IPS = ("", "0.0.0.0", "::", "127.0.0.1", "::1")
 ICON = dict(logs="\U000F0331", shell="\U000F018D", root="\U000F0483", web="\U000F059F", start="\U000F040A",
             stop="\U000F04DB", restart="\U000F0450", remove="\U000F0A7A", copy="\U000F018F", folder="\U000F024B",
             pause="\U000F03E4", kill="\U000F0156")
@@ -56,21 +61,27 @@ def short_state(state, status):
         age = n + {"second": "s", "minute": "m", "hour": "h", "day": "d", "week": "w", "month": "mo", "year": "y"}[m[2]]
     health = " ✓" if "(healthy)" in status else " ✗" if "(unhealthy)" in status else " …" if "health: starting" in status else ""
     word = {"running": "up", "exited": "exited", "created": "created", "paused": "paused",
-            "restarting": "restarting", "dead": "dead", "removing": "removing"}.get(state, state)
+            "restarting": "restart", "dead": "dead", "removing": "removing"}.get(state, state)
+    code = re.search(r"Exited \((\d+)\)", status)
+    if code and code[1] != "0":                          # it failed: say with what
+        word = f"exited {code[1]}"
     return f"{word} {age}{health}".strip()
 
 
-def host_ports(ports):
+def host_ports(ports, web=False):
     """'0.0.0.0:40525->1025/tcp, [::]:40525->1025/tcp, 6379/tcp' → [40525] · ranges too:
-    '0.0.0.0:8000-8002->8000-8002/tcp' → [8000, 8001, 8002]."""
+    '0.0.0.0:8000-8002->8000-8002/tcp' → [8000, 8001, 8002] · web=True: only TCP ports that
+    localhost reaches (all addresses or loopback), the ones a browser can open."""
     found = set()
-    for a, b in re.findall(r":(\d+)(?:-(\d+))?->", ports or ""):
+    for ip, a, b, proto in re.findall(r"(\[[^\]]*\]|[\d.]*):(\d+)(?:-(\d+))?->[\d-]+/(\w+)", ports or ""):
+        if web and (proto != "tcp" or ip.strip("[]") not in WEB_IPS):
+            continue
         found.update(range(int(a), int(b or a) + 1))
     return sorted(found)
 
 
 def mem_bytes(text):
-    m = re.match(r"([\d.]+)\s*([KMGT]?i?B)", (text or "").strip())
+    m = re.match(r"([\d.]+)\s*([kKMGT]?i?B)", (text or "").strip())
     if not m:
         return None
     mult = {"B": 1, "KiB": 1024, "kB": 1000, "KB": 1000, "MiB": 1024 ** 2, "MB": 1000 ** 2, "GiB": 1024 ** 3,
@@ -85,32 +96,112 @@ def human(n):
         n /= 1024
 
 
+STATS_FRAME = re.compile(rb"\x1b\[2J|\x1b\[H")      # docker stats starts each refresh by clearing
+
+
 class Stats(threading.Thread):
-    """docker stats --no-stream takes ~1 s: keep fresh numbers without blocking the pane.
-    Only while the pane is in sight (`wanted`): it is the heaviest thing the monitor runs."""
+    """CPU and memory of every container, from one `docker stats` that keeps running (it prints
+    a fresh table every second) while the pane is in sight (`wanted`), ended out of sight.
+    Not `docker stats --no-stream` in a loop: each of those takes ~2 s and costs dockerd far
+    more (it starts sampling every container again) · it was the heaviest thing the monitor ran."""
 
     def __init__(self):
         super().__init__(daemon=True)
         self.data = {}
         self.wanted = threading.Event()
 
+    @staticmethod
+    def parse(block):
+        """One refresh (the JSON lines between two clears) → {name: (cpu %, used, limit)}."""
+        data = {}
+        for line in block.decode("utf-8", "replace").splitlines():
+            line = line.replace("\x1b[K", "").strip()
+            if not line.startswith("{"):
+                continue
+            # a container caught stopping or restarting shows "--": no numbers for it
+            try:
+                s = json.loads(line)
+                cpu = float(s.get("CPUPerc", "0%").rstrip("%") or 0)
+            except ValueError:
+                continue
+            used, _, limit = s.get("MemUsage", "").partition("/")
+            data[s.get("Name")] = (cpu, mem_bytes(used), mem_bytes(limit))
+        return data
+
     def run(self):
         while True:
             self.wanted.wait()
-            res = docker("stats", "--no-stream", "--format", "{{json .}}", timeout=20)
-            if res and res.returncode == 0:
-                data = {}
-                for line in res.stdout.splitlines():
-                    # a container caught stopping or restarting shows "--": no numbers for it
-                    try:
-                        s = json.loads(line)
-                        cpu = float(s.get("CPUPerc", "0%").rstrip("%") or 0)
-                    except ValueError:
-                        continue
-                    used, _, limit = s.get("MemUsage", "").partition("/")
-                    data[s.get("Name")] = (cpu, mem_bytes(used), mem_bytes(limit))
-                self.data = data
-            time.sleep(3)
+            try:                                  # started here: this thread lives as long as the pane
+                proc = subprocess.Popen(["docker", "stats", "--format", "{{json .}}"], stdout=subprocess.PIPE,
+                                        stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                                        preexec_fn=tmuxlink.die_with_parent)
+            except OSError:
+                time.sleep(15)
+                continue
+            buf = b""
+            # read with a timeout, not by line: with no containers a refresh is only the clear
+            # codes, no newline, and the read must still notice the pane went out of sight
+            while self.wanted.is_set() and proc.poll() is None:
+                ready, _, _ = select.select([proc.stdout], [], [], 2)
+                if not ready:
+                    continue
+                chunk = os.read(proc.stdout.fileno(), 65536)
+                if not chunk:
+                    break
+                buf += chunk
+                parts = STATS_FRAME.split(buf)
+                # every part but the last is a whole refresh (the last may still be arriving)
+                for part in reversed(parts[:-1]):
+                    if part.strip():
+                        self.data = self.parse(part)
+                        break
+                buf = parts[-1][-262144:]
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+            if self.wanted.is_set():
+                time.sleep(3)                     # it ended by itself (no Docker): try again later
+
+
+class Events(threading.Thread):
+    """`docker events` for containers while the pane is in sight: a container that starts, stops,
+    restarts, dies or changes health is read again at once (on_change), so `docker ps -a` itself
+    (70-90 ms of dockerd each time) is asked only every READ_EVERY seconds otherwise."""
+
+    def __init__(self, wanted, on_change):
+        super().__init__(daemon=True)
+        self.wanted, self.on_change = wanted, on_change
+
+    def run(self):
+        while True:
+            self.wanted.wait()
+            try:
+                proc = subprocess.Popen(["docker", "events", "--filter", "type=container", "--format", "{{.Action}}"],
+                                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                                        preexec_fn=tmuxlink.die_with_parent)
+            except OSError:
+                time.sleep(15)
+                continue
+            buf = b""
+            while self.wanted.is_set() and proc.poll() is None:
+                ready, _, _ = select.select([proc.stdout], [], [], 2)
+                if ready:
+                    chunk = os.read(proc.stdout.fileno(), 65536)
+                    if not chunk:
+                        break
+                    *lines, buf = (buf + chunk).split(b"\n")     # (the last one may still be arriving)
+                    # exec_* (exec_create: /bin/sh -c pg_isready…) are `docker exec` into a container,
+                    # which every healthcheck is, a few a second in all: nothing in the list changes
+                    if any(line.strip() and not line.startswith(b"exec_") for line in lines):
+                        self.on_change()
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+            if self.wanted.is_set():
+                time.sleep(5)                     # it ended by itself (Docker restarting): later
+
+
+READ_EVERY = 15      # seconds between `docker ps -a` when no event said something changed
 
 
 class Containers(TableApp):
@@ -120,10 +211,11 @@ class Containers(TableApp):
     noun = "containers"
     interval = 3.0
     sort_key = "order"
+    search_keys = ("name", "image", "project", "state_txt", "networks", "ports_txt", "service")
     columns = [Column("name", "CONTAINER", 26, min=14),
                Column("image", "IMAGE"),
                Column("project", "PROJECT", 13, optional=True),
-               Column("state_txt", "STATE", 12),
+               Column("state_txt", "STATE", 14),
                Column("cpu", "CPU%", 6, "r", desc=True, fmt=lambda v: f"{v:.1f}"),
                Column("mem", "MEM / LIMIT", 14, "r", desc=True, sort="mem_b"),
                Column("arch", "ARCH", 6, optional=True),
@@ -133,59 +225,117 @@ class Containers(TableApp):
     def __init__(self, screen):
         self.stats = Stats()
         self.stats.start()
+        Events(self.stats.wanted, self.changed).start()     # (in sight together with the stats)
         self.arch_cache = {}
         self.error = ""
+        self.bg = Background(self.wake, fallback=lambda: None)
         super().__init__(screen)
         if self.visible:
             self.stats.wanted.set()
 
-    def image_arch(self, image):
-        if image not in self.arch_cache:
-            res = docker("image", "inspect", "--format", "{{.Architecture}}", image)
-            self.arch_cache[image] = res.stdout.strip() if res and res.returncode == 0 else "?"
-        return self.arch_cache[image]
+    def changed(self):
+        """A container event (from the Events thread): read the list again now."""
+        self.bg.forget(("reading",))
+        self.wake()
 
-    def fetch(self):
-        res = docker("ps", "-a", "--format", "{{json .}}")
+    def read(self):
+        """docker ps + inspect, in a thread (a slow or hung daemon must not freeze the pane) ·
+        None when docker does not answer, with the reason in self.error."""
+        global HOST_ARCH
+        # the fields one by one: {{json .}} makes docker work out every container's size each time
+        fmt = ('{"ID":{{json .ID}},"Image":{{json .Image}},"Names":{{json .Names}},"State":{{json .State}},'
+               '"Status":{{json .Status}},"Ports":{{json .Ports}},"Networks":{{json .Networks}}}')
+        res = docker("ps", "-a", "--format", fmt, timeout=8)
         if res is None or res.returncode:
             if res and "permission denied" in res.stderr.lower():
                 self.error = "no access to Docker: sudo usermod -aG docker $USER, then open a new login session"
+            elif res and "not installed" not in res.stderr and shutil.which("docker"):
+                self.error = "Docker is not answering (starting? stopped?): the last list stays meanwhile"
+                if getattr(self, "had_rows", False):
+                    raise OSError(self.error)          # keep the last rows, ask again in 15 s
             else:
                 self.error = "Docker is not running (or not installed): start Docker Desktop / the docker service"
-            return []
+            return {"found": [], "info": {}, "arch": {}}
         self.error = ""
+        if not getattr(self, "server_arch", None):          # the daemon's machine, not this client's
+            v = docker("version", "-f", "{{.Server.Arch}}", timeout=5)
+            if v and v.returncode == 0 and v.stdout.strip():  # (no answer: asked again next time)
+                self.server_arch = ARCH.get(v.stdout.strip(), v.stdout.strip())
+                HOST_ARCH = self.server_arch
         found = []
         for line in res.stdout.splitlines():
             try:
                 found.append(json.loads(line))
             except ValueError:
                 pass
-        restarts = {}
+        info = {}
         if found:
-            ins = docker("inspect", "--format", "{{.Name}}|{{.RestartCount}}", *[c["ID"] for c in found])
+            # names, restart counts and labels from inspect: ps' "Labels" is one comma-joined
+            # string that a value with a comma (a folder) breaks
+            ins = docker("inspect", "--format", "{{.Id}}|{{.Name}}|{{.RestartCount}}|{{json .Config.Labels}}",
+                         *[c["ID"] for c in found], timeout=8)
             for line in (ins.stdout if ins else "").splitlines():
-                n, _, rc = line.partition("|")
-                restarts[n.lstrip("/")] = int(rc) if rc.isdigit() else 0
+                cid, name, rc, labels = (line.split("|", 3) + ["", "", "", ""])[:4]
+                try:
+                    labels = json.loads(labels) or {}
+                except ValueError:
+                    labels = {}
+                info[cid[:12]] = (name.lstrip("/"), int(rc) if rc.isdigit() else 0, labels)
+        # the architecture of each image, here in the thread (old daemons have no Platform field)
+        arch = {}
+        images = sorted({c["Image"] for c in found} - set(self.arch_cache))
+        if images:
+            ins = docker("image", "inspect", "--format", "{{.Architecture}}", *images, timeout=8)
+            got = (ins.stdout.split() if ins else [])
+            if len(got) == len(images):
+                arch = dict(zip(images, got))
+            elif ins is not None:
+                # one image gone (or with no Architecture) shifts every answer after it: one by
+                # one then, and the ones without an answer are "?" (not asked again every 2.5 s)
+                for image in images[:30]:
+                    one = docker("image", "inspect", "--format", "{{.Architecture}}", image, timeout=5)
+                    arch[image] = (one.stdout.strip() if one and one.returncode == 0 else "") or "?"
+        self.arch_cache.update(arch)
+        self.had_rows = bool(found)
+        return {"found": found, "info": info}
+
+    def image_arch(self, c):
+        """The container's platform (docker ps has it since Docker 28), else its image's."""
+        plat = c.get("Platform")
+        if isinstance(plat, dict) and plat.get("architecture"):
+            return plat["architecture"]
+        return self.arch_cache.get(c["Image"], "?")        # read in the thread (read())
+
+    def fetch(self):
+        got = self.bg.get(("reading",), self.read, READ_EVERY)
+        if got is None:
+            return self.all                      # the first answer is on its way
         rows = []
-        for c in found:
-            labels = dict(kv.split("=", 1) for kv in c.get("Labels", "").split(",") if "=" in kv)
-            name, state = c["Names"], c["State"]
+        for c in got["found"]:
+            name, restarts, labels = got["info"].get(c["ID"][:12], (c["Names"].split(",")[0], 0, {}))
+            if labels.get("com.docker.compose.oneoff") == "True":
+                project_mate = False             # `compose run`: not one of the project's services
+            else:
+                project_mate = True
+            state = c["State"]
             running = state == "running"
             st = self.stats.data.get(name) if running else None
             hp = host_ports(c.get("Ports"))
-            arch = self.image_arch(c["Image"])
+            web = host_ports(c.get("Ports"), web=True)
+            arch = self.image_arch(c)
             mem = None
             if st and st[1] is not None:
                 mem = f"{human(st[1])} / {human(st[2])}" if st[2] else human(st[1])
             project = labels.get("com.docker.compose.project", "")
-            rows.append({"id": c["ID"], "name": name, "image": c["Image"], "state": state, "status": c["Status"],
-                         "state_txt": short_state(state, c["Status"]), "project": project,
-                         "service": labels.get("com.docker.compose.service", ""),
+            rows.append({"id": name, "cid": c["ID"], "name": name, "image": c["Image"], "state": state,
+                         "status": c["Status"], "state_txt": short_state(state, c["Status"]), "project": project,
+                         "service": labels.get("com.docker.compose.service", ""), "mate": project_mate,
                          "workdir": labels.get("com.docker.compose.project.working_dir", ""),
+                         "files": [f for f in labels.get("com.docker.compose.project.config_files", "").split(",") if f],
                          "cpu": st[0] if st else None, "mem": mem, "mem_b": st[1] if st else None,
                          "arch": arch, "emulated": arch not in ("?", "", HOST_ARCH),
-                         "networks": c.get("Networks", ""), "restarts": restarts.get(name, 0),
-                         "ports": hp, "ports_txt": " ".join(f":{p}" for p in hp),
+                         "networks": c.get("Networks", ""), "restarts": restarts,
+                         "ports": hp, "web": web, "ports_txt": " ".join(f":{p}" for p in hp),
                          "order": (not running, project or "~", name)})
         return rows
 
@@ -194,7 +344,10 @@ class Containers(TableApp):
         up = [r for r in self.all if r["state"] == "running"]
         cpu = sum(r["cpu"] or 0 for r in up)
         mem = sum(r["mem_b"] or 0 for r in up)
-        parts = [f"{TEXT}{len(up)} up", f"{DIM}CPU {cpu:.1f}%", f"MEM {human(mem)}"]
+        if self.stats.data or not up:
+            parts = [f"{TEXT}{len(up)} up", f"{DIM}CPU {cpu:.1f}%", f"MEM {human(mem)}"]
+        else:                                    # docker stats' first sample is on its way: not 0%
+            parts = [f"{TEXT}{len(up)} up", f"{DIM}CPU …", "MEM …"]
         emu = sum(1 for r in self.all if r["emulated"])
         if emu:
             parts.append(f"{YELLOW}{emu} emulated{DIM}")
@@ -222,21 +375,25 @@ class Containers(TableApp):
 
     # ─── talking to the other panes ───
     def selected(self, r):
-        tmuxlink.put("@docker-selected", r["name"] if r else "")
+        tmuxlink.publish("@docker-selected", r["name"] if r else "")
 
     watch = ("@docker-focus",)
 
     def on_tick(self):
         self.stats.wanted.set()                  # in sight: docker stats runs (see Stats)
         want = self.opts.get("@docker-focus")    # "show this container" from the Ports pane
+        if want and want != getattr(self, "focus_since", (None,))[0]:
+            self.focus_since = (want, time.monotonic())
         if want:
-            tmuxlink.put("@docker-focus", None)
             self.query = ""
             self.reload()
-            for r in self.rows:
-                if r["name"] == want:
-                    self.cur_id = self.sel_id = r["id"]
-                    self.ensure_visible()
+            hit = next((r for r in self.rows if r["name"] == want), None)
+            if hit or time.monotonic() - self.focus_since[1] > 10:    # found, or not coming
+                tmuxlink.put("@docker-focus", None)
+            if hit:
+                self.cur_id = self.sel_id = hit["id"]
+                self._moved = True               # the detail panes follow it
+                self.ensure_visible()
 
     def dispatch(self, ev):
         super().dispatch(ev)
@@ -254,8 +411,8 @@ class Containers(TableApp):
         items = [(f"{ICON['logs']}  Logs", "l", lambda: tmuxlink.focus("Logs")),
                  (f"{ICON['shell']}  Shell inside (as you)", "s", (lambda: self.shell(r, root=False)) if up else None),
                  (f"{ICON['root']}  Shell inside (as root)", "S", (lambda: self.shell(r, root=True)) if up else None)]
-        for p in r["ports"][:3]:
-            items.append((f"{ICON['web']}  Open http://localhost:{p}", "o" if p == r["ports"][0] else "",
+        for p in r["web"][:3]:
+            items.append((f"{ICON['web']}  Open http://localhost:{p}", "o" if p == r["web"][0] else "",
                           lambda p=p: self.browse(p)))
         items += [("", "", None),
                   (f"{ICON['start']}  Start", "a", None if alive else (lambda: self.act(r, "start"))),
@@ -266,11 +423,11 @@ class Containers(TableApp):
                   (f"{ICON['kill']}  Kill · when Stop hangs…", "k", (lambda: self.ask_act(r, "kill")) if alive else None),
                   (f"{ICON['remove']}  Remove…", "d", None if alive else (lambda: self.ask_act(r, "rm")))]
         if r["project"]:
-            mates = [x for x in self.all if x["project"] == r["project"]]
+            mates = [x for x in self.all if x["project"] == r["project"] and x["mate"]]
             stopped = sum(1 for x in mates if x["state"] != "running")
             items += [("", "", None),
                       (f"{ICON['folder']}  Open the project folder ({r['project']})", "f",
-                       (lambda: self.open_folder(r)) if r["workdir"] else None),
+                       (lambda: self.open_folder(r)) if r["workdir"] and os.path.isdir(r["workdir"]) else None),
                       (f"{ICON['start']}  Start the whole project ({stopped} stopped)", "A",
                        (lambda: self.project(r, "start")) if stopped else None),
                       (f"{ICON['restart']}  Restart the whole project…", "R", lambda: self.ask_project(r, "restart")),
@@ -278,19 +435,19 @@ class Containers(TableApp):
                        (lambda: self.ask_project(r, "stop")) if stopped < len(mates) else None)]
         items += [("", "", None),
                   (f"{ICON['copy']}  Copy the name", "c", lambda: self.copy(r["name"])),
-                  (f"{ICON['copy']}  Copy the id", "i", lambda: self.copy(r["id"]))]
+                  (f"{ICON['copy']}  Copy the id", "i", lambda: self.copy(r["cid"]))]
         return items
 
     def on_double(self, r, col, x):
         """Double-click a port in PORTS: open that one in the browser · elsewhere: the menu."""
-        if col == "ports_txt" and r["ports"]:
+        if col == "ports_txt" and r["web"]:
             x0 = self.col_spans[col][0]
             text, at = r["ports_txt"], x - x0
             word = ""
             if 0 <= at < len(text) and text[at] != " ":          # on a port, not between or after them
                 start = text.rfind(" ", 0, at) + 1
                 word = text[start:].split(" ", 1)[0].lstrip(":")
-            if word.isdigit():
+            if word.isdigit() and int(word) in r["web"]:
                 self.browse(int(word))
                 return
         super().on_double(r, col, x)
@@ -314,17 +471,23 @@ class Containers(TableApp):
     def act(self, r, verb):
         def done(ok, out):
             self.flash(f"{r['name']}: {self.DONE[verb]}" if ok else f"{r['name']}: {last_line(out)}", ok)
-        self.background(r, self.DOING[verb], ["docker", verb, r["name"]], done)
+        self.background(r, self.DOING[verb], ["docker", verb, r["cid"]], done)
 
     def ask_project(self, r, verb):
-        n = sum(1 for x in self.all if x["project"] == r["project"] and x["state"] == "running")
+        n = sum(1 for x in self.all if x["project"] == r["project"] and x["mate"] and x["state"] == "running")
         self.confirm(f"{verb.capitalize()} the whole compose project {r['project']} ({n} running)?",
                      lambda: self.project(r, verb), r)
 
     def project(self, r, verb):
         def done(ok, out):
             self.flash(f"{r['project']}: {self.DONE[verb]}" if ok else f"{r['project']}: {last_line(out)}", ok)
-        self.background(r, f"{self.DOING[verb]} project", ["docker", "compose", "-p", r["project"], verb], done)
+        # from the project's folder with its own files: compose would otherwise look for a compose
+        # file in this pane's folder (and its parents) and act on what it finds there
+        files = [a for f in r["files"] if os.path.exists(f) for a in ("-f", f)]
+        cwd = r["workdir"] if r["workdir"] and os.path.isdir(r["workdir"]) else "/"
+        self.background(r, f"{self.DOING[verb]} project",
+                        ["sh", "-c", 'cd "$1" && shift && exec "$@"', "sh", cwd, "docker", "compose", *files,
+                         "-p", r["project"], verb], done)
 
     def shell(self, r, root):
         """A popup with bash (or sh) inside. Images without a shell (distroless, scratch)
@@ -339,12 +502,13 @@ class Containers(TableApp):
         self.popup(f"{'root' if root else 'shell'} · {r['name']} · exit closes", "bash -c " + shlex.quote(script))
 
     def open_folder(self, r):
-        subprocess.Popen([os.path.join(os.path.dirname(os.path.realpath(__file__)), "terminal.zsh"), "open", r["project"], r["workdir"]],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        self.flash(f"session {r['project']} in {r['workdir']}")
+        name = tmuxlink.session_for(r["workdir"])
+        subprocess.Popen([os.path.join(os.path.dirname(os.path.realpath(__file__)), "terminal.zsh"), "open", name,
+                          r["workdir"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.flash(f"session {name} in {r['workdir']}")
 
     def browse(self, port):
-        url = f"http://localhost:{port}"
+        url = f"{'https' if port in (443, 8443) else 'http'}://localhost:{port}"
         if tmuxlink.open_url(url):
             self.flash(f"opening {url} in the browser")
         else:
