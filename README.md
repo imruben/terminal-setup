@@ -210,7 +210,7 @@ Abre una terminal nueva: tmux arranca solo y te lleva al **monitor del sistema**
 | el menú con lo más usado | `Ctrl+a Space` (o **󰍜 menu**, o clic derecho en la barra) |
 | abrir / cambiar de sesión | `Ctrl+a s` · en la terminal: `terminal` |
 | una sesión nueva para un proyecto | `Ctrl+a s`, escribe el nombre, Enter, elige la carpeta |
-| una sesión para trabajar al arrancar | si al abrir la terminal solo está `system`, se crea `dev` (en tu home) al lado: `Ctrl+a s` para ir. Otro nombre: `export TERMINAL_DEFAULT_SESSION=<nombre>` en tu `~/.zshrc`; vacío (`=`) para ninguna |
+| una sesión para trabajar al arrancar | si al abrir la terminal no existe `dev`, se crea al lado de `system` (en `~/dev`, o en tu home si no existe): `Ctrl+a s` para ir. Otro nombre: `export TERMINAL_DEFAULT_SESSION=<nombre>` en tu `~/.zshrc`; vacío (`=`) para ninguna |
 | pestaña nueva / dividir | `Ctrl+a c` · `Ctrl+a v` (al lado) · `Ctrl+a -` (debajo) |
 | volver al monitor | `Ctrl+a M` (o clic en CPU / RAM de la barra) |
 | una terminal sin tmux | `Ctrl+a d`: sales de tmux al shell normal y tmux sigue funcionando (vuelves con `terminal`). Para que no arranque nunca: `export TERMINAL_NO_AUTOSTART=1` en tu `~/.zshrc` |

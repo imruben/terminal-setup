@@ -217,12 +217,13 @@ autostart() {
     done
   fi
 
-  # a session to work in, next to the monitor, when there is none (nothing restored).
+  # a session to work in, next to the monitor, whenever it is missing (after the restore,
+  # so a saved one comes back as it was). It starts in ~/dev (or ~ when there is none).
   # Name: TERMINAL_DEFAULT_SESSION in ~/.zshrc (default dev; empty: none)
-  local def=$(clean_name "${TERMINAL_DEFAULT_SESSION-dev}")
-  local -a others=(${(f)"$(session_names)"}); others=(${others:#system})
-  if [[ -n $def && $def != system ]] && (( ! $#others )); then
-    tmux new-session -d -s "$def" -c "$HOME"
+  local def=$(clean_name "${TERMINAL_DEFAULT_SESSION-dev}") dir=$HOME/dev
+  [[ -d $dir ]] || dir=$HOME
+  if [[ -n $def && $def != system ]] && ! session_exists "$def"; then
+    tmux new-session -d -s "$def" -c "$dir"
   fi
 
   # straight into the system monitor (tmux/system.sh); Ctrl+a s switches session,
